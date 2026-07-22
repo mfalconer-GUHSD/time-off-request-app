@@ -142,11 +142,13 @@ function fmtTime(t) {
   const h12 = ((h + 11) % 12) + 1;
   return `${h12}:${String(m).padStart(2,"0")} ${period}`;
 }
-function hoursBetween(startTime, endTime) {
+function hoursBetween(startTime, endTime, tookLunch) {
   const [sh, sm] = startTime.split(":").map(Number);
   const [eh, em] = endTime.split(":").map(Number);
   const mins = (eh * 60 + em) - (sh * 60 + sm);
-  return Math.round((mins / 60) * 4) / 4; // nearest quarter hour
+  let hours = Math.round((mins / 60) * 4) / 4; // nearest quarter hour
+  if (hours >= 5 && tookLunch) hours -= 0.5; // unpaid 30-min lunch on 5+ hour days
+  return Math.round(hours * 4) / 4;
 }
 function addMonths(dateISO, months) {
   const d = new Date(dateISO + "T00:00:00");
@@ -313,8 +315,11 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
   const [uStart, setUStart] = useState("");
   const [uEnd, setUEnd] = useState("");
   const [uReason, setUReason] = useState("");
+  const [uTookLunch, setUTookLunch] = useState(true);
 
-  const computedUsedHours = (uStart && uEnd) ? hoursBetween(uStart, uEnd) : null;
+  const rawUsedSpan = (uStart && uEnd) ? hoursBetween(uStart, uEnd, false) : null;
+  const computedUsedHours = (uStart && uEnd) ? hoursBetween(uStart, uEnd, uTookLunch) : null;
+  const lunchApplies = rawUsedSpan !== null && rawUsedSpan >= 5;
 
   function submitUsed(ev) {
     ev.preventDefault();
@@ -327,7 +332,7 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
       setError("End time must be after the start time.");
       return;
     }
-    const totalHours = hoursBetween(uStart, uEnd);
+    const totalHours = hoursBetween(uStart, uEnd, uTookLunch);
     if (totalHours <= 0) {
       setError("Please select a valid time range.");
       return;
@@ -350,7 +355,7 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
       decidedAt: null,
       decidedBy: null,
     });
-    setUDate(""); setUStart(""); setUEnd(""); setUReason("");
+    setUDate(""); setUStart(""); setUEnd(""); setUReason(""); setUTookLunch(true);
   }
 
   return (
@@ -414,6 +419,8 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
 
               {error && <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</p>}
 
+              <p className="text-xs text-slate-400">One entry per date of comp time earned. Please don't bundle multiple dates into a single submission.</p>
+
               <button type="submit" className="w-full bg-[#1E3A5F] hover:bg-[#16304f] text-white font-semibold text-sm rounded-lg py-2.5 transition-colors">
                 Submit earned time
               </button>
@@ -437,11 +444,19 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
               <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-600">
                 Total hours of leave: <span className="font-semibold text-slate-800">{computedUsedHours !== null ? computedUsedHours : "—"}</span>
                 <span className="text-xs text-slate-400 block mt-0.5">Calculated automatically from start/end time, rounded to the nearest quarter hour.</span>
+                {lunchApplies && (
+                  <label className="flex items-center gap-2 text-xs text-slate-600 mt-2">
+                    <input type="checkbox" checked={!uTookLunch} onChange={e => setUTookLunch(!e.target.checked)} />
+                    I did not take an unpaid 30-minute lunch (don't subtract it)
+                  </label>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1">Reason (optional)</label>
                 <textarea value={uReason} onChange={e => setUReason(e.target.value)} rows={2} placeholder="e.g. Personal appointment" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm resize-none" />
               </div>
+              <p className="text-xs text-slate-400">One entry per day of comp time used. If you need multiple days off, please submit a separate request for each date.</p>
+
 
               {error && <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</p>}
 
