@@ -1,20 +1,13 @@
 {
   "hosting": {
     "public": ".",
-    "ignore": ["firebase.json", "**/.*", "**/node_modules/**", "functions/**", "scripts/**", "SETUP.md", "setup.sh", "package.json"],
-    "rewrites": [
-      { "source": "/emailAction", "function": "emailAction" }
+    "ignore": [
+      "firebase.json", "**/.*", "**/node_modules/**",
+      "scripts/**", ".github/**", "SETUP.md", "setup.sh", "package.json", "package-lock.json"
     ]
   },
   "firestore": {
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
-  },
-  "functions": [
-    {
-      "source": "functions",
-      "codebase": "default",
-      "runtime": "nodejs20"
-    }
-  ]
+  }
 }

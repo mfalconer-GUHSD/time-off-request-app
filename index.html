@@ -15,7 +15,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-functions-compat.js"></script>
 
 <style>
   html, body, #root { height: 100%; }
@@ -82,13 +81,31 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
-const functions = firebase.functions();
 
 const DISTRICT_DOMAIN = "guhsd.net";
 const MAX_ACCRUAL_HOURS = 24;
 const SUBMIT_WITHIN_DAYS = 5;
 const EXPIRES_AFTER_MONTHS = 10;
 const isoToday = new Date().toISOString().slice(0,10);
+
+function roundToQuarter(n) { return Math.round(n * 4) / 4; }
+function addMonthsToDate(dateStr, months) {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setMonth(d.getMonth() + months);
+  return d;
+}
+/**
+ * Matches the district's actual "Earned Comp Time Calc" spreadsheet logic:
+ * 1.5x if regular hours worked that day > 0 (true overtime), 1x if 0
+ * (e.g. a weekend event). Computed client-side since this app runs on
+ * Firebase's free plan (no Cloud Functions to recompute it server-side) —
+ * Firestore security rules validate this math on write as a backstop.
+ */
+function computeCompHours(extraHours, regularHours) {
+  const otApplied = regularHours > 0;
+  const compHoursExact = otApplied ? extraHours * 1.5 : extraHours * 1.0;
+  return { otApplied, compHoursExact, compHoursRounded: roundToQuarter(compHoursExact) };
+}
 
 /* GUHSD schools — verify against HR/IT before go-live. */
 const SCHOOLS = [
@@ -326,18 +343,23 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
     if (isNaN(extraHours) || extraHours <= 0) { setError("Extra hours worked must be a positive number."); return; }
     if (isNaN(regularHours) || regularHours < 0) { setError("Regular hours must be zero or positive."); return; }
 
-    // Client-side estimate only — the Cloud Function recomputes this
-    // authoritatively (with the OT/straight-time multiplier) on write.
-    const estimate = regularHours > 0 ? extraHours * 1.5 : extraHours;
-    const projected = availableBalance + pendingEarnedHours + estimate;
+    // Client-computed — Firestore rules validate this math on write since
+    // there's no Cloud Function to recompute it authoritatively.
+    const { otApplied, compHoursExact, compHoursRounded } = computeCompHours(extraHours, regularHours);
+    const projected = availableBalance + pendingEarnedHours + compHoursRounded;
     if (projected > MAX_ACCRUAL_HOURS) {
       setError(`This would put your accrued balance over the ${MAX_ACCRUAL_HOURS}-hour contract limit. Talk to your admin before submitting.`);
       return;
     }
 
+    const expiresOn = addMonthsToDate(eDate, EXPIRES_AFTER_MONTHS);
+
     await onSubmitEarned({
       eventReason: eReason.trim(), dateWorked: eDate, extraHours, regularHours,
+      otApplied, compHoursExact, compHoursRounded, remainingHours: compHoursRounded,
+      expiresOn: firebase.firestore.Timestamp.fromDate(expiresOn),
       adminOverseeingUserId: eManagerId, preApproved: ePreApproved,
+      managerNotified: false,
     });
     setEDate(""); setEReason(""); setEExtraHours(""); setERegularHours(""); setEManagerId(""); setEPreApproved(false);
   }
@@ -367,6 +389,7 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
     await onSubmitUsed({
       dateOfLeave: uDate, startTime: uStart, endTime: uEnd, totalHours,
       reason: uReason.trim() || "—", adminOverseeingUserId: uManagerId,
+      managerNotified: false,
     });
     setUDate(""); setUStart(""); setUEnd(""); setUReason(""); setUTookLunch(true); setUManagerId("");
   }
@@ -729,10 +752,25 @@ function App() {
 
   useEffect(() => auth.onAuthStateChanged(u => setAuthUser(u)), []);
 
-  // Load / listen to my user profile doc
+  // Load / listen to my user profile doc — create it on first sign-in
+  // (previously a Cloud Function did this; the free plan has none, so the
+  // client does it, permitted by Firestore rules for a self-created doc).
   useEffect(() => {
     if (!authUser) { setMe(null); return; }
-    return db.collection("users").doc(authUser.uid).onSnapshot(snap => {
+    const ref = db.collection("users").doc(authUser.uid);
+    ref.get().then(snap => {
+      if (!snap.exists) {
+        return ref.set({
+          email: (authUser.email || "").toLowerCase(),
+          name: authUser.displayName || authUser.email,
+          school: null,
+          isManagerFor: [],
+          isSuperAdmin: false,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+    });
+    return ref.onSnapshot(snap => {
       if (snap.exists) setMe({ id: authUser.uid, ...snap.data() });
     });
   }, [authUser]);
@@ -790,9 +828,67 @@ function App() {
   }, [me]);
 
   const handleDecide = useCallback(async (kind, id, action) => {
-    const decideRequest = functions.httpsCallable("decideRequest");
     try {
-      await decideRequest({ kind, id, action });
+      const collection = kind === "earned" ? "earnedRequests" : "usedRequests";
+      const ref = db.collection(collection).doc(id);
+
+      if (action === "reject") {
+        await ref.update({ status: "rejected", decidedAt: firebase.firestore.FieldValue.serverTimestamp() });
+        return;
+      }
+
+      if (kind === "earned") {
+        await ref.update({ status: "approved", decidedAt: firebase.firestore.FieldValue.serverTimestamp() });
+        return;
+      }
+
+      // Usage request approval: draw down the employee's oldest unexpired
+      // earned batches first (FIFO), as a single Firestore transaction run
+      // under the approving manager's own authenticated session (there's
+      // no Cloud Function to do this server-side on the free plan).
+      const usedSnap = await ref.get();
+      const usedData = usedSnap.data();
+      const today = new Date();
+
+      const earnedSnap = await db.collection("earnedRequests")
+        .where("employeeId", "==", usedData.employeeId)
+        .where("status", "==", "approved")
+        .orderBy("dateWorked", "asc")
+        .get();
+
+      const eligible = earnedSnap.docs.filter(d => {
+        const e = d.data();
+        const expiresOn = e.expiresOn && e.expiresOn.toDate ? e.expiresOn.toDate() : new Date(e.expiresOn);
+        return (e.remainingHours || 0) > 0 && expiresOn > today;
+      });
+
+      let remainingToCover = usedData.totalHours;
+      const allocations = [];
+      for (const d of eligible) {
+        if (remainingToCover <= 0) break;
+        const e = d.data();
+        const draw = Math.min(e.remainingHours, remainingToCover);
+        allocations.push({ earnedRequestId: d.id, hoursDrawn: draw });
+        remainingToCover = roundToQuarter(remainingToCover - draw);
+      }
+
+      if (remainingToCover > 0) {
+        alert("This can no longer be approved as-is — the employee's available balance has changed since they submitted.");
+        return;
+      }
+
+      const batch = db.batch();
+      for (const alloc of allocations) {
+        const eDoc = eligible.find(d => d.id === alloc.earnedRequestId);
+        const newRemaining = roundToQuarter(eDoc.data().remainingHours - alloc.hoursDrawn);
+        batch.update(db.collection("earnedRequests").doc(alloc.earnedRequestId), { remainingHours: newRemaining });
+      }
+      batch.update(ref, {
+        status: "approved",
+        decidedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        allocations,
+      });
+      await batch.commit();
     } catch (e) {
       alert(e.message || "Something went wrong processing that decision.");
     }

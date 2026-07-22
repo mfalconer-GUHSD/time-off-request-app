@@ -10,10 +10,16 @@ rules_version = '2';
 //   usedRequests/{id}       -> comp-time usage requests
 //   auditLog/{id}           -> append-only activity log
 //
-// Identity comes entirely from Firebase Auth (Google Sign-In). District
-// domain restriction is enforced twice: once client-side (UX only, not
-// trusted) and again here (the actual security boundary), plus again in
-// the onUserCreate Cloud Function which deletes any non-domain account.
+// NOTE ON ARCHITECTURE: this app runs on Firebase's free Spark plan with
+// no Cloud Functions (no billing account). That means there is no trusted
+// server recomputing the OT/straight-time comp-hour math — the client
+// computes it, and these rules validate the arithmetic on write as a
+// backstop against a tampered or buggy client. It's a weaker guarantee
+// than a Cloud Function recomputing it independently, but keeps the
+// worst case bounded to "obviously wrong values are rejected" rather than
+// "no check at all." FIFO consumption similarly runs as a client-side
+// Firestore transaction (executed under the approving manager's own
+// authenticated session) rather than an Admin-SDK transaction.
 // -----------------------------------------------------------------------
 
 function isSignedIn() {
@@ -36,6 +42,17 @@ function isManagerFor(schoolId) {
   return isDistrictAccount() && schoolId in myUserDoc().isManagerFor;
 }
 
+// Validates the OT/straight-time comp-hour math submitted by the client
+// matches the district's actual formula: 1.5x if regular hours worked
+// that day > 0 (true overtime), 1.0x if 0 (e.g. a weekend event).
+function compHoursMathIsValid(data) {
+  let expectedExact = data.regularHours > 0 ? data.extraHours * 1.5 : data.extraHours * 1.0;
+  return data.compHoursExact == expectedExact &&
+         data.compHoursRounded >= expectedExact - 0.125 &&
+         data.compHoursRounded <= expectedExact + 0.125 &&
+         data.remainingHours == data.compHoursRounded;
+}
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -43,7 +60,9 @@ service cloud.firestore {
     // themselves manager/superadmin rights — only a superadmin can do that).
     match /users/{uid} {
       allow read: if isDistrictAccount() && (request.auth.uid == uid || isSuperAdmin());
-      allow create: if isDistrictAccount() && request.auth.uid == uid;
+      allow create: if isDistrictAccount() && request.auth.uid == uid &&
+        request.resource.data.isManagerFor == [] &&
+        request.resource.data.isSuperAdmin == false;
       allow update: if isDistrictAccount() && (
         (request.auth.uid == uid &&
           request.resource.data.isManagerFor == resource.data.isManagerFor &&
@@ -66,14 +85,14 @@ service cloud.firestore {
         isManagerFor(resource.data.school) ||
         isSuperAdmin()
       );
-      // Employees create their own; server-computed fields (comp hours,
-      // remaining hours, expiration) are filled in by the Cloud Function,
-      // not trusted from the client.
+      // Employee creates their own; comp-hour math is validated here since
+      // there's no Cloud Function to recompute it authoritatively.
       allow create: if isDistrictAccount() &&
         request.resource.data.employeeId == request.auth.uid &&
-        request.resource.data.status == 'pending';
-      // Only an assigned manager (or superadmin) can approve/reject;
-      // employees cannot edit their own submission once created.
+        request.resource.data.status == 'pending' &&
+        compHoursMathIsValid(request.resource.data);
+      // Managers (for FIFO drawdown + approve/reject) and superadmins can
+      // update. Employees cannot edit their own submission once created.
       allow update: if isDistrictAccount() &&
         (isManagerFor(resource.data.school) || isSuperAdmin());
       allow delete: if isSuperAdmin();
@@ -88,7 +107,8 @@ service cloud.firestore {
       );
       allow create: if isDistrictAccount() &&
         request.resource.data.employeeId == request.auth.uid &&
-        request.resource.data.status == 'pending';
+        request.resource.data.status == 'pending' &&
+        request.resource.data.totalHours > 0;
       allow update: if isDistrictAccount() &&
         (isManagerFor(resource.data.school) || isSuperAdmin());
       allow delete: if isSuperAdmin();

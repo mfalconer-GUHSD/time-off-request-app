@@ -1,30 +1,22 @@
 # Comp Time Tracker — Setup Guide
 
-Most of this is now automated by `setup.sh`. What's left is a short list of
-things that genuinely require a human to click a button, enter a payment
-method, or hold a credential — nothing I can do from inside a sandboxed
-code environment. This guide lists them in order, marking which are
-one-time human actions vs. fully scripted.
+This build runs entirely on Firebase's **free Spark plan** — no billing
+account, no card on file, anywhere. Notifications (which would otherwise
+need Cloud Functions) run instead via a scheduled **GitHub Actions**
+workflow, which is also free. Most of the Firebase setup is automated by
+`setup.sh`; what's left is a short list of one-time human steps.
 
-## The irreducible manual steps (do these first)
+## Progress checklist
 
-**1. A Google Cloud Billing Account with a payment method on file.**
-Cloud Functions requires the Blaze (pay-as-you-go) plan to exist at all —
-even though you'll very likely pay $0/month at this scale. If GUHSD
-already has a Google Cloud billing account (ask IT), get its ID (format
-`000000-000000-000000`) from https://console.cloud.google.com/billing.
-If not, one has to be created there, which requires entering a card.
-**I cannot do this step under any circumstances — entering payment
-information is outside what I'll do regardless of how it's requested.**
+- [ ] Run `setup.sh` (fully automated once you answer its prompts)
+- [ ] Enable Google as a sign-in provider (one toggle, ~10 seconds)
+- [ ] Sign into the app once, then run the superadmin bootstrap script
+- [ ] Create a service account key for GitHub Actions
+- [ ] Set 6 GitHub repo secrets
+- [ ] Verify the school list against HR/IT
+- [ ] Work through the pre-launch test checklist
 
-**2. Decide who creates the Firebase project**, and under what account.
-Ideally a GUHSD-owned Google Cloud organization, not a personal account —
-ask IT if that exists. Whoever runs `setup.sh` needs permission to create
-projects there.
-
-## Run the automated setup
-
-Once the two items above are settled:
+## 1. Run the automated setup
 
 ```bash
 git clone https://github.com/mfalconer-GUHSD/time-off-request-app.git
@@ -32,50 +24,25 @@ cd time-off-request-app
 bash setup.sh
 ```
 
-The script will prompt you for:
-- A project ID and display name
-- Your billing account ID (from step 1 above — or skip and link it
-  manually later at the URL the script prints)
-- SMTP credentials for outgoing email (see "Email" below)
-- A Firestore location (defaults to `us-west2`, close to San Diego)
-
-It handles, without further input from you:
+It will prompt you for a project ID, display name, and a Firestore
+location (defaults to `us-west2`). It handles, without further input:
 - Installing the Firebase CLI if needed
 - Creating the Firebase project
-- Registering the web app and **automatically writing its config into
-  `index.html`** (no manual copy-pasting)
+- Registering the web app and **writing its config into `index.html`
+  automatically**
 - Creating the Firestore database
-- Setting the SMTP config Cloud Functions reads
-- Deploying Firestore rules, indexes, Cloud Functions, and Hosting
+- Deploying Firestore rules, indexes, and Hosting
 
-## Email: which option to use
+## 2. Enable Google sign-in (manual, ~10 seconds)
 
-Tell the script's SMTP prompts either:
-- **Workspace SMTP relay** — no per-app password, but IT needs to
-  allowlist Cloud Functions' outbound IPs in the Workspace admin console
-  under Apps > Gmail > Routing.
-- **A transactional email service** (e.g. SendGrid's free tier) — simpler,
-  no Workspace changes needed, just an API-issued SMTP credential.
+This one toggle isn't reliably scriptable. Go to:
+**Firebase Console → your project → Authentication → Sign-in method →
+Google → Enable.** The script prints the direct URL at the end.
 
-If you don't have this decided yet, you can run `setup.sh` and enter
-placeholder SMTP values, then re-run just this part later:
+## 3. Grant yourself the first superadmin role
 
-```bash
-firebase functions:config:set smtp.host="..." smtp.port="587" \
-  smtp.user="..." smtp.pass="..." --project YOUR_PROJECT_ID
-firebase deploy --only functions --project YOUR_PROJECT_ID
-```
-
-## After the script finishes — 2 remaining manual steps
-
-**1. Enable Google as a sign-in provider** (one toggle, ~10 seconds — this
-specific setting isn't reliably scriptable):
-Firebase Console → your project → **Authentication → Sign-in method →
-Google → Enable**. The script prints the direct URL for this at the end.
-
-**2. Grant yourself the first superadmin role.**
 Sign into the deployed app once at `https://YOUR_PROJECT_ID.web.app`
-(this auto-creates your user document), then run:
+(this creates your user document), then:
 
 ```bash
 gcloud auth application-default login   # one-time, if not already done
@@ -83,30 +50,111 @@ npm install
 node scripts/make-superadmin.js you@guhsd.net
 ```
 
-From there, you can grant `isManagerFor` roles to other staff (which
-schools they approve for) either directly in the Firestore console, or by
-building a small admin screen later once the workflow is proven out.
+**No `gcloud` installed?** You can instead do this one step by hand: open
+the Firestore console, find your document under the `users` collection
+(it's keyed by your Firebase Auth UID — match by the `email` field), and
+manually set `isSuperAdmin` to `true`. This is the only place in this
+whole setup where editing Firestore directly is the recommended path,
+since it's a single field on a single document, one time only.
 
-## Verify the school list
+## 4. Set up notifications (GitHub Actions)
+
+Since there's no Cloud Functions, a scheduled GitHub Actions workflow
+(already in this repo at `.github/workflows/notifications.yml`) checks
+every 15 minutes for new requests and expiring/expired comp time, and
+sends the emails. It needs a Firebase service account key and your SMTP
+credentials, stored as **GitHub repo secrets** (never committed to code).
+
+### Create the service account key
+
+**With `gcloud` installed:**
+```bash
+gcloud iam service-accounts create comp-time-notifier --project YOUR_PROJECT_ID
+
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:comp-time-notifier@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/datastore.user"
+
+gcloud iam service-accounts keys create service-account.json \
+  --iam-account="comp-time-notifier@YOUR_PROJECT_ID.iam.gserviceaccount.com"
+```
+
+**Without `gcloud`** (Console UI instead):
+1. Go to **Google Cloud Console → IAM & Admin → Service Accounts** for
+   your project.
+2. **Create Service Account** → name it `comp-time-notifier` → grant it
+   the **Cloud Datastore User** role.
+3. Open it → **Keys → Add Key → Create new key → JSON** → this downloads
+   `service-account.json`.
+
+Either way: open `service-account.json`, copy its *entire contents*, and
+**delete the local file once it's in GitHub Secrets** (below) — don't
+leave it sitting on disk or commit it anywhere.
+
+### Add the GitHub repo secrets
+
+In the repo: **Settings → Secrets and variables → Actions → New repository
+secret.** Add all six:
+
+| Secret name | Value |
+|---|---|
+| `FIREBASE_SERVICE_ACCOUNT` | The entire contents of `service-account.json` |
+| `SMTP_HOST` | Your SMTP provider's host |
+| `SMTP_PORT` | Usually `587` |
+| `SMTP_USER` | Sending address, e.g. `notifications@guhsd.net` |
+| `SMTP_PASS` | SMTP password/credential |
+| `APP_BASE_URL` | `https://YOUR_PROJECT_ID.web.app` |
+
+For SMTP, either a **Workspace SMTP relay** (needs IT to allowlist GitHub
+Actions' outbound IPs — trickier since GitHub's IP ranges are broad and
+change, so this is less practical here than it was for Cloud Functions'
+fixed IPs) or a **transactional email service** (SendGrid's free tier is
+simplest — no allowlisting needed, just an API-issued SMTP credential).
+Given GitHub Actions' shifting IP ranges, **a transactional email service
+is the more realistic choice here.**
+
+### Verify it's working
+
+**Actions** tab in the repo → **Comp Time Notifications** → **Run
+workflow** to trigger it manually and check the logs, rather than waiting
+up to 15 minutes for the schedule.
+
+**Reminder:** GitHub disables scheduled workflows after 60 days of
+repository inactivity. If notifications quietly stop, push any commit or
+re-enable the workflow manually under the Actions tab.
+
+## 5. Verify the school list
 
 The `SCHOOLS` array in `index.html` was compiled from GUHSD's public
-website. Confirm it against HR/IT's authoritative list before go-live —
-school lists and names do drift over time.
+website. Confirm it against HR/IT's authoritative list before go-live.
 
-## What to test before rolling out to real staff
+## 6. What to test before rolling out to real staff
 
 - [ ] Sign in with a `@guhsd.net` account — confirm it works and a
-      non-district Google account is rejected.
+      non-district Google account is rejected (client-side check; the
+      real security boundary is Firestore rules, which block all data
+      access regardless of what the client does).
 - [ ] Pick a school, confirm the manager dropdown is empty until you (as
       superadmin) grant someone a manager role for that school.
 - [ ] Submit an earned-time entry, confirm the OT/straight-time math
       matches the spreadsheet's logic (1.5x if regular hours > 0, 1x if 0).
-- [ ] Approve it from the email link, and separately test approving from
-      the in-app dashboard — confirm both update Firestore identically.
+- [ ] Approve/reject from the in-app dashboard, confirm Firestore updates
+      correctly.
 - [ ] Submit and approve a usage request that spans two earned batches —
       confirm the oldest batch is drawn down first (check `remainingHours`
       on each earned entry in Firestore after approval).
+- [ ] Manually trigger the GitHub Actions workflow and confirm you receive
+      a "new request" email.
 - [ ] Manually backdate an earned entry's `expiresOn` field in Firestore
-      to yesterday, then wait for (or manually trigger) the daily
-      expiration check — confirm the payout email goes out with the
-      correct event/date/hours.
+      to yesterday, trigger the workflow, and confirm the payout email
+      goes out with the correct event/date/hours.
+
+## Known tradeoffs of this no-billing-account architecture
+
+- **Comp-hour math and FIFO consumption run client-side**, not in a
+  trusted server function. Firestore rules validate the arithmetic as a
+  backstop, but this is a thinner guarantee than independent server-side
+  recomputation.
+- **Notifications land within ~15 minutes, not instantly.**
+- **No one-click approve/deny straight from the email** — the email links
+  into the dashboard instead, where a manager approves after logging in.

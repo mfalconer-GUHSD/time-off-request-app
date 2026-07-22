@@ -1,27 +1,23 @@
 #!/usr/bin/env bash
 #
-# Comp Time Tracker — Automated Setup
-#
-# Run this once, on a machine with Node.js installed, after you've completed
-# the two things that genuinely cannot be scripted (see SETUP.md):
-#   1. A Google Cloud Billing Account exists with a payment method on file.
-#   2. You have permission to create a Firebase project (ideally under a
-#      GUHSD-owned Google Cloud organization — ask IT if unsure).
+# Comp Time Tracker — Automated Setup (Spark/free plan, no billing account)
 #
 # This script will:
 #   - Install the Firebase CLI if needed
 #   - Log you into Firebase (opens a browser window — this part can't be
 #     automated, it's your own Google account login)
 #   - Create the Firebase project
-#   - Register the web app and pull its config
-#   - Auto-inject that config into index.html
+#   - Register the web app and auto-inject its config into index.html
 #   - Create the Firestore database
-#   - Link billing (Blaze plan) if you provide a billing account ID
-#   - Prompt for SMTP credentials and set them
-#   - Deploy Firestore rules/indexes, Cloud Functions, and Hosting
+#   - Deploy Firestore rules/indexes and Hosting
 #
-# Everything else — enabling the Google sign-in provider toggle, and the
-# very first superadmin grant — is documented as the remaining manual steps.
+# Notifications run separately via GitHub Actions (see SETUP.md) since
+# Cloud Functions requires a billing account and this setup avoids that
+# entirely — everything here is genuinely free with no card required.
+#
+# Remaining manual steps after this script finishes: enabling the Google
+# sign-in provider toggle, granting yourself superadmin, and setting the
+# GitHub Actions secrets for notifications. All documented in SETUP.md.
 
 set -euo pipefail
 
@@ -59,22 +55,7 @@ fs.writeFileSync('.firebaserc', JSON.stringify(rc, null, 2) + '\n');
 "
 echo ".firebaserc updated."
 
-# ---- 3. Billing (Blaze plan) ------------------------------------------------
-echo
-echo "Cloud Functions requires the Blaze (pay-as-you-go) plan."
-read -rp "Billing account ID to link (format 000000-000000-000000), or leave blank to do this manually later: " BILLING_ID
-if [ -n "$BILLING_ID" ] && command -v gcloud &>/dev/null; then
-  gcloud billing projects link "$PROJECT_ID" --billing-account="$BILLING_ID"
-  echo "Billing linked."
-elif [ -n "$BILLING_ID" ]; then
-  echo "gcloud CLI not found — link billing manually at:"
-  echo "  https://console.firebase.google.com/project/$PROJECT_ID/usage/details"
-else
-  echo "Skipping — you'll need to upgrade to Blaze manually before functions will deploy:"
-  echo "  https://console.firebase.google.com/project/$PROJECT_ID/usage/details"
-fi
-
-# ---- 4. Register the web app & inject config into index.html --------------
+# ---- 3. Register the web app & inject config into index.html --------------
 echo
 echo "Registering the web app..."
 firebase apps:create WEB "Comp Time Tracker Web" --project "$PROJECT_ID"
@@ -94,36 +75,17 @@ fs.writeFileSync('index.html', html);
 console.log('index.html updated with real Firebase config.');
 " "$CONFIG_JSON"
 
-# ---- 5. Firestore database --------------------------------------------------
+# ---- 4. Firestore database --------------------------------------------------
 echo
 read -rp "Firestore location [us-west2]: " FS_LOCATION
 FS_LOCATION=${FS_LOCATION:-us-west2}
 firebase firestore:databases:create "(default)" --location="$FS_LOCATION" --project "$PROJECT_ID" || \
   echo "(Database may already exist — continuing.)"
 
-# ---- 6. Email / SMTP config -------------------------------------------------
+# ---- 5. Deploy rules/indexes + hosting --------------------------------------
 echo
-echo "Outgoing email config (see SETUP.md for Workspace relay vs. SendGrid tradeoffs)."
-read -rp "SMTP host: " SMTP_HOST
-read -rp "SMTP port [587]: " SMTP_PORT
-SMTP_PORT=${SMTP_PORT:-587}
-read -rp "SMTP user (sending address, e.g. notifications@guhsd.net): " SMTP_USER
-read -rsp "SMTP password/credential: " SMTP_PASS
-echo
-
-firebase functions:config:set \
-  smtp.host="$SMTP_HOST" \
-  smtp.port="$SMTP_PORT" \
-  smtp.user="$SMTP_USER" \
-  smtp.pass="$SMTP_PASS" \
-  app.base_url="https://$PROJECT_ID.web.app" \
-  --project "$PROJECT_ID"
-
-# ---- 7. Deploy everything ---------------------------------------------------
-echo
-echo "Deploying Firestore rules/indexes, Cloud Functions, and Hosting..."
-cd functions && npm install && cd ..
-firebase deploy --only firestore:rules,firestore:indexes,functions,hosting --project "$PROJECT_ID"
+echo "Deploying Firestore rules/indexes and Hosting..."
+firebase deploy --only firestore:rules,firestore:indexes,hosting --project "$PROJECT_ID"
 
 echo
 echo "=============================================="
@@ -134,4 +96,14 @@ echo "     https://console.firebase.google.com/project/$PROJECT_ID/authenticatio
 echo "  2. Sign into the app once at https://$PROJECT_ID.web.app"
 echo "  3. Run: node scripts/make-superadmin.js you@guhsd.net"
 echo "     to grant yourself the first superadmin role"
+echo "  4. Set up GitHub Actions secrets for notifications (see SETUP.md)"
+echo "     — this needs a service account key; the script below creates one:"
+echo "       gcloud iam service-accounts create comp-time-notifier --project $PROJECT_ID"
+echo "       gcloud projects add-iam-policy-binding $PROJECT_ID \\"
+echo "         --member=\"serviceAccount:comp-time-notifier@$PROJECT_ID.iam.gserviceaccount.com\" \\"
+echo "         --role=\"roles/datastore.user\""
+echo "       gcloud iam service-accounts keys create service-account.json \\"
+echo "         --iam-account=\"comp-time-notifier@$PROJECT_ID.iam.gserviceaccount.com\""
+echo "     Then paste the contents of service-account.json into the"
+echo "     FIREBASE_SERVICE_ACCOUNT GitHub secret, and delete the local file."
 echo "=============================================="
