@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Comp Time Tracker | West Hills Staff</title>
+<title>Comp Time Tracker</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
@@ -61,30 +61,17 @@
 const { useState, useEffect, useMemo, useCallback } = React;
 
 /* ---------------------------------------------------------
-   Roster & constants (from West Hills Comp Time forms)
+   Constants
+   NOTE: There is no hardcoded staff roster. Identity comes from
+   what's entered at login (name + district email), which stands
+   in for the eventual Google Sign-In restricted to @guhsd.net.
 --------------------------------------------------------- */
-const STORAGE_KEY = "comp_time_tracker_v1";
-
-const RAW_ROSTER = [
-  "BARAJAS, Guillermo","BROWN, Carrie","CRENSHAW, Pamela","CRUSE, Ronnie","EDINGTON, Silvia",
-  "GRANT, Nick","HERMAN, Kelley","JOHNS, Therese","LANCASTER, Wendi","LONDON, Quentin",
-  "MATEUS, Diana","MENGES, Todd","NOVICIO, Bert","OBREGON, Chloe","PELLEGRINI, Ruth",
-  "PHILLIPS, Pete","PITONES, Sarita","PUDIL, Heather","RALEY, Katie","RAWLEY, Leroy",
-  "RAY, Anna","RODRIGUEZ, Erick","SAMPLES, Reagan","SCHAUFLER, Cyndel","SCHILLING, Amy",
-  "SKALNIK, Kelly","SOTO, Norma","STEVESON, Cassidy","STORTON, Adrienne","SYKOWSKI, James",
-  "TERRY, Tammy","UNDERWOOD, Lori","VILLA, Jacobo","VILLASANA, Cassandra","VINEYARD, Shawn",
-  "WHEATON, Kyle","WHITEMAN, John",
-];
-
-function toDisplayName(lastCommaFirst) {
-  const [last, first] = lastCommaFirst.split(",").map(s => s.trim());
-  return `${first} ${last}`;
-}
-
-const ROSTER = RAW_ROSTER.map(raw => ({ id: raw, name: toDisplayName(raw) }))
-  .sort((a,b) => a.name.localeCompare(b.name));
+const STORAGE_KEY = "comp_time_tracker_v2";
+const DISTRICT_DOMAIN = "guhsd.net";
 
 const ADMINS = ["April Baker", "Lindsay Abbott", "John Hoadley", "Brie Pagano", "Abby Fazekas"];
+// ^ Carried over from the Comp Time form you shared. Flag if this list is also
+//   specific to a different site and needs to change.
 
 const MAX_ACCRUAL_HOURS = 24;
 const SUBMIT_WITHIN_DAYS = 5;   // working days
@@ -92,23 +79,23 @@ const EXPIRES_AFTER_MONTHS = 10;
 const isoToday = new Date().toISOString().slice(0,10);
 
 /* ---------------------------------------------------------
-   Seed data — small realistic example set
+   Seed data — clearly-fictional example people, for demo purposes only
 --------------------------------------------------------- */
 const seedEarned = [
-  { id: "e1", employeeId: "SOTO, Norma", eventReason: "Back to School Night coverage", dateWorked: "2026-07-09", extraHours: 2, regularHours: 8, adminOverseeing: "April Baker", status: "approved", submittedAt: "2026-07-10T15:00:00Z", decidedAt: "2026-07-10T18:00:00Z", decidedBy: "April Baker" },
-  { id: "e2", employeeId: "MENGES, Todd", eventReason: "Varsity football game supervision", dateWorked: "2026-07-17", extraHours: 3.5, regularHours: 8, adminOverseeing: "John Hoadley", status: "pending", submittedAt: "2026-07-18T13:20:00Z", decidedAt: null, decidedBy: null },
+  { id: "e1", employeeId: "jexample@guhsd.net", employeeName: "Jordan Example", eventReason: "Back to School Night coverage", dateWorked: "2026-07-09", extraHours: 2, regularHours: 8, adminOverseeing: "April Baker", preApproved: true, status: "approved", submittedAt: "2026-07-10T15:00:00Z", decidedAt: "2026-07-10T18:00:00Z", decidedBy: "April Baker" },
+  { id: "e2", employeeId: "sdemo@guhsd.net", employeeName: "Sam Demo", eventReason: "Varsity football game supervision", dateWorked: "2026-07-17", extraHours: 3.5, regularHours: 8, adminOverseeing: "John Hoadley", preApproved: true, status: "pending", submittedAt: "2026-07-18T13:20:00Z", decidedAt: null, decidedBy: null },
 ];
 
 const seedUsed = [
-  { id: "u1", employeeId: "SOTO, Norma", dateOfLeave: "2026-07-15", startTime: "13:00", endTime: "15:00", totalHours: 2, reason: "Personal appointment", status: "approved", submittedAt: "2026-07-12T09:00:00Z", decidedAt: "2026-07-12T14:00:00Z", decidedBy: "April Baker" },
+  { id: "u1", employeeId: "jexample@guhsd.net", employeeName: "Jordan Example", dateOfLeave: "2026-07-15", startTime: "13:00", endTime: "15:00", totalHours: 2, reason: "Personal appointment", status: "approved", submittedAt: "2026-07-12T09:00:00Z", decidedAt: "2026-07-12T14:00:00Z", decidedBy: "April Baker" },
 ];
 
 const seedAuditLog = [
-  { id: "a1", ts: "2026-07-10T15:00:00Z", actor: "Norma Soto", action: "Logged 2 comp hours earned (Back to School Night coverage)" },
-  { id: "a2", ts: "2026-07-10T18:00:00Z", actor: "April Baker", action: "Approved Norma Soto's earned comp time (2 hrs)" },
-  { id: "a3", ts: "2026-07-12T09:00:00Z", actor: "Norma Soto", action: "Requested to use 2 comp hours" },
-  { id: "a4", ts: "2026-07-12T14:00:00Z", actor: "April Baker", action: "Approved Norma Soto's comp time usage (2 hrs)" },
-  { id: "a5", ts: "2026-07-18T13:20:00Z", actor: "Todd Menges", action: "Logged 3.5 comp hours earned (Varsity football game supervision)" },
+  { id: "a1", ts: "2026-07-10T15:00:00Z", actor: "Jordan Example", action: "Logged 2 comp hours earned (Back to School Night coverage)" },
+  { id: "a2", ts: "2026-07-10T18:00:00Z", actor: "April Baker", action: "Approved Jordan Example's earned comp time (2 hrs)" },
+  { id: "a3", ts: "2026-07-12T09:00:00Z", actor: "Jordan Example", action: "Requested to use 2 comp hours" },
+  { id: "a4", ts: "2026-07-12T14:00:00Z", actor: "April Baker", action: "Approved Jordan Example's comp time usage (2 hrs)" },
+  { id: "a5", ts: "2026-07-18T13:20:00Z", actor: "Sam Demo", action: "Logged 3.5 comp hours earned (Varsity football game supervision)" },
 ];
 
 function loadState() {
@@ -116,7 +103,7 @@ function loadState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
   } catch (e) {}
-  return { earned: seedEarned, used: seedUsed, auditLog: seedAuditLog, currentUserId: null };
+  return { earned: seedEarned, used: seedUsed, auditLog: seedAuditLog, currentUser: null };
 }
 function saveState(state) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
@@ -226,33 +213,65 @@ function ContractBanner() {
 }
 
 /* ---------------------------------------------------------
-   Login (name-based, stands in for Google SSO)
+   Login (name + district email, stands in for domain-restricted
+   Google Sign-In). No fixed roster — anyone with an @guhsd.net
+   address can sign in, matching the eventual SSO behavior.
 --------------------------------------------------------- */
 function LoginScreen({ onLogin }) {
-  const [selected, setSelected] = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState("");
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    setError("");
+    const trimmedName = name.trim();
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedName || !trimmedEmail) {
+      setError("Please enter your name and district email.");
+      return;
+    }
+    if (!trimmedEmail.endsWith("@" + DISTRICT_DOMAIN)) {
+      setError(`Please sign in with your @${DISTRICT_DOMAIN} account.`);
+      return;
+    }
+    onLogin({ id: trimmedEmail, name: trimmedName });
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#1E3A5F] px-6">
       <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-sm fade-in">
         <h1 className="font-display text-xl font-bold text-slate-800 mb-1">Comp Time Tracker</h1>
-        <p className="text-sm text-slate-500 mb-6">West Hills Staff — sign in to continue</p>
-        <label className="block text-xs font-semibold text-slate-600 mb-1">Select your name</label>
-        <select
-          value={selected}
-          onChange={e => setSelected(e.target.value)}
-          className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white mb-4"
-        >
-          <option value="">Choose…</option>
-          {ROSTER.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-        </select>
-        <button
-          disabled={!selected}
-          onClick={() => selected && onLogin(selected)}
-          className="w-full bg-[#1E3A5F] disabled:opacity-40 hover:bg-[#16304f] text-white font-semibold text-sm rounded-lg py-2.5 transition-colors"
-        >
-          Continue
-        </button>
+        <p className="text-sm text-slate-500 mb-6">Sign in to continue</p>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Full name</label>
+            <input
+              type="text" value={name} onChange={e => setName(e.target.value)}
+              placeholder="e.g. Jordan Rivera"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">District email</label>
+            <input
+              type="email" value={email} onChange={e => setEmail(e.target.value)}
+              placeholder={`you@${DISTRICT_DOMAIN}`}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            />
+          </div>
+
+          {error && <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</p>}
+
+          <button
+            type="submit"
+            className="w-full bg-[#1E3A5F] hover:bg-[#16304f] text-white font-semibold text-sm rounded-lg py-2.5 transition-colors"
+          >
+            Continue
+          </button>
+        </form>
         <p className="text-xs text-slate-400 mt-4 text-center">
-          Prototype login — will be replaced with Google Sign-In (@guhsd.net) for production use.
+          Prototype login — production will use Google Sign-In restricted to @{DISTRICT_DOMAIN} accounts.
         </p>
       </div>
     </div>
@@ -336,6 +355,7 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
     onSubmitEarned({
       id: uid("e"),
       employeeId,
+      employeeName,
       eventReason: eReason.trim(),
       dateWorked: eDate,
       extraHours,
@@ -385,6 +405,7 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
     onSubmitUsed({
       id: uid("u"),
       employeeId,
+      employeeName,
       dateOfLeave: uDate,
       startTime: uStart,
       endTime: uEnd,
@@ -641,8 +662,6 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
    Manager View
 --------------------------------------------------------- */
 function ManagerView({ earned, used, auditLog, onApprove, onReject }) {
-  const nameOf = (id) => (ROSTER.find(r => r.id === id) || {}).name || id;
-
   const pendingEarned = useMemo(
     () => earned.filter(r => r.status === "pending").sort((a,b) => new Date(a.submittedAt) - new Date(b.submittedAt)),
     [earned]
@@ -652,19 +671,23 @@ function ManagerView({ earned, used, auditLog, onApprove, onReject }) {
     [used]
   );
 
+  // Staff list is derived dynamically from whoever has submitted something —
+  // there's no fixed roster, so this can't enumerate staff with zero activity.
   const balances = useMemo(() => {
     const today = new Date();
-    return ROSTER.map(person => {
-      const myEarned = earned.filter(r => r.employeeId === person.id && r.status === "approved");
+    const ids = new Set([...earned.map(r => r.employeeId), ...used.map(r => r.employeeId)]);
+    return Array.from(ids).map(id => {
+      const displayName = (earned.find(r => r.employeeId === id) || used.find(r => r.employeeId === id) || {}).employeeName || id;
+      const myEarned = earned.filter(r => r.employeeId === id && r.status === "approved");
       const eA = myEarned.reduce((s,r) => s + r.extraHours, 0);
       const eExpired = myEarned
         .filter(r => new Date(addMonths(r.dateWorked, EXPIRES_AFTER_MONTHS)) < today)
         .reduce((s,r) => s + r.extraHours, 0);
-      const uA = used.filter(r => r.employeeId === person.id && r.status === "approved").reduce((s,r) => s + r.totalHours, 0);
-      const eP = earned.filter(r => r.employeeId === person.id && r.status === "pending").reduce((s,r) => s + r.extraHours, 0);
-      const uP = used.filter(r => r.employeeId === person.id && r.status === "pending").reduce((s,r) => s + r.totalHours, 0);
-      return { ...person, balance: Math.max(0, (eA - eExpired) - uA), pendingEarned: eP, pendingUsed: uP };
-    }).filter(p => p.balance > 0 || p.pendingEarned > 0 || p.pendingUsed > 0);
+      const uA = used.filter(r => r.employeeId === id && r.status === "approved").reduce((s,r) => s + r.totalHours, 0);
+      const eP = earned.filter(r => r.employeeId === id && r.status === "pending").reduce((s,r) => s + r.extraHours, 0);
+      const uP = used.filter(r => r.employeeId === id && r.status === "pending").reduce((s,r) => s + r.totalHours, 0);
+      return { id, name: displayName, balance: Math.max(0, (eA - eExpired) - uA), pendingEarned: eP, pendingUsed: uP };
+    }).sort((a,b) => a.name.localeCompare(b.name));
   }, [earned, used]);
 
   const sortedLog = useMemo(() => [...auditLog].sort((a,b) => new Date(b.ts) - new Date(a.ts)), [auditLog]);
@@ -681,7 +704,7 @@ function ManagerView({ earned, used, auditLog, onApprove, onReject }) {
             onClick={() => downloadCsv(
               "comp_time_earned_all_staff.csv",
               toCsv(earned, [
-                { label: "Employee", get: r => nameOf(r.employeeId) },
+                { label: "Employee", get: r => r.employeeName },
                 { label: "Date Worked", get: r => r.dateWorked },
                 { label: "Event/Reason", get: r => r.eventReason },
                 { label: "Extra Hours", get: r => r.extraHours },
@@ -701,7 +724,7 @@ function ManagerView({ earned, used, auditLog, onApprove, onReject }) {
             onClick={() => downloadCsv(
               "comp_time_used_all_staff.csv",
               toCsv(used, [
-                { label: "Employee", get: r => nameOf(r.employeeId) },
+                { label: "Employee", get: r => r.employeeName },
                 { label: "Date of Leave", get: r => r.dateOfLeave },
                 { label: "Start Time", get: r => r.startTime },
                 { label: "End Time", get: r => r.endTime },
@@ -722,7 +745,7 @@ function ManagerView({ earned, used, auditLog, onApprove, onReject }) {
       <div className="flex flex-wrap gap-4">
         <BalanceCard label="Pending earned entries" value={pendingEarned.length} unit="need review" accent="#92400E" />
         <BalanceCard label="Pending usage requests" value={pendingUsed.length} unit="need review" accent="#0F766E" />
-        <BalanceCard label="Staff with a balance" value={balances.length} unit="tracked" accent="#1E3A5F" />
+        <BalanceCard label="Staff with activity" value={balances.length} unit="tracked" accent="#1E3A5F" />
       </div>
 
       {/* Pending earned */}
@@ -751,7 +774,7 @@ function ManagerView({ earned, used, auditLog, onApprove, onReject }) {
                 const late = countWorkingDaysBetween(r.dateWorked, r.submittedAt.slice(0,10)) > SUBMIT_WITHIN_DAYS;
                 return (
                   <tr key={r.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
-                    <td className="px-6 py-3 font-medium text-slate-800">{nameOf(r.employeeId)}</td>
+                    <td className="px-6 py-3 font-medium text-slate-800">{r.employeeName}</td>
                     <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{fmtDate(r.dateWorked)}</td>
                     <td className="px-4 py-3 text-slate-500 max-w-[160px] truncate" title={r.eventReason}>{r.eventReason}</td>
                     <td className="px-4 py-3 text-slate-700">{r.extraHours}</td>
@@ -797,7 +820,7 @@ function ManagerView({ earned, used, auditLog, onApprove, onReject }) {
               )}
               {pendingUsed.map(r => (
                 <tr key={r.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
-                  <td className="px-6 py-3 font-medium text-slate-800">{nameOf(r.employeeId)}</td>
+                  <td className="px-6 py-3 font-medium text-slate-800">{r.employeeName}</td>
                   <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{fmtDate(r.dateOfLeave)}</td>
                   <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{fmtTime(r.startTime)}–{fmtTime(r.endTime)}</td>
                   <td className="px-4 py-3 text-slate-700">{r.totalHours}</td>
@@ -890,7 +913,7 @@ function TopBar({ view, setView, employeeName, onSwitchUser }) {
       <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="font-display text-lg font-bold leading-tight">Comp Time Tracker</h1>
-          <p className="text-xs text-white/60">West Hills Staff — earned &amp; used hours</p>
+          <p className="text-xs text-white/60">Earned &amp; used hours</p>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-3">
@@ -920,33 +943,31 @@ function TopBar({ view, setView, employeeName, onSwitchUser }) {
 --------------------------------------------------------- */
 function App() {
   const initial = loadState();
-  const [currentUserId, setCurrentUserId] = useState(initial.currentUserId);
+  const [currentUser, setCurrentUser] = useState(initial.currentUser);
   const [earned, setEarned] = useState(initial.earned);
   const [used, setUsed] = useState(initial.used);
   const [auditLog, setAuditLog] = useState(initial.auditLog);
   const [view, setView] = useState("employee");
 
   useEffect(() => {
-    saveState({ earned, used, auditLog, currentUserId });
-  }, [earned, used, auditLog, currentUserId]);
-
-  const currentName = useMemo(() => (ROSTER.find(r => r.id === currentUserId) || {}).name || "", [currentUserId]);
+    saveState({ earned, used, auditLog, currentUser });
+  }, [earned, used, auditLog, currentUser]);
 
   const handleSubmitEarned = useCallback((entry) => {
     setEarned(prev => [...prev, entry]);
     setAuditLog(prev => [...prev, {
-      id: uid("a"), ts: entry.submittedAt, actor: currentName,
+      id: uid("a"), ts: entry.submittedAt, actor: entry.employeeName,
       action: `Logged ${entry.extraHours} comp hours earned (${entry.eventReason})`,
     }]);
-  }, [currentName]);
+  }, []);
 
   const handleSubmitUsed = useCallback((entry) => {
     setUsed(prev => [...prev, entry]);
     setAuditLog(prev => [...prev, {
-      id: uid("a"), ts: entry.submittedAt, actor: currentName,
+      id: uid("a"), ts: entry.submittedAt, actor: entry.employeeName,
       action: `Requested to use ${entry.totalHours} comp hours`,
     }]);
-  }, [currentName]);
+  }, []);
 
   const decide = useCallback((kind, id, newStatus) => {
     const setter = kind === "earned" ? setEarned : setUsed;
@@ -954,13 +975,12 @@ function App() {
       const target = prevList.find(r => r.id === id);
       if (!target || target.status !== "pending") return prevList;
       const decidedAt = new Date().toISOString();
-      const empName = (ROSTER.find(r => r.id === target.employeeId) || {}).name || target.employeeId;
       const hours = kind === "earned" ? target.extraHours : target.totalHours;
       const verb = newStatus === "approved" ? "Approved" : "Rejected";
       const noun = kind === "earned" ? "earned comp time" : "comp time usage";
       setAuditLog(prevLog => [...prevLog, {
         id: uid("a"), ts: decidedAt, actor: "Admin",
-        action: `${verb} ${empName}'s ${noun} (${hours} hrs)`,
+        action: `${verb} ${target.employeeName}'s ${noun} (${hours} hrs)`,
       }]);
       return prevList.map(r => r.id === id ? { ...r, status: newStatus, decidedAt, decidedBy: "Admin" } : r);
     });
@@ -969,18 +989,18 @@ function App() {
   const handleApprove = useCallback((kind, id) => decide(kind, id, "approved"), [decide]);
   const handleReject = useCallback((kind, id) => decide(kind, id, "rejected"), [decide]);
 
-  if (!currentUserId) {
-    return <LoginScreen onLogin={(id) => setCurrentUserId(id)} />;
+  if (!currentUser) {
+    return <LoginScreen onLogin={(user) => setCurrentUser(user)} />;
   }
 
   return (
     <div className="min-h-screen">
-      <TopBar view={view} setView={setView} employeeName={currentName} onSwitchUser={() => setCurrentUserId(null)} />
+      <TopBar view={view} setView={setView} employeeName={currentUser.name} onSwitchUser={() => setCurrentUser(null)} />
       <main className="max-w-6xl mx-auto px-6 py-8">
         {view === "employee" ? (
           <EmployeeView
-            employeeId={currentUserId}
-            employeeName={currentName}
+            employeeId={currentUser.id}
+            employeeName={currentUser.name}
             earned={earned}
             used={used}
             onSubmitEarned={handleSubmitEarned}
