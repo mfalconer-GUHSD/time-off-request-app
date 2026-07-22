@@ -167,6 +167,30 @@ function countWorkingDaysBetween(startISO, endISO) {
   return count;
 }
 
+function toCsv(rows, headers) {
+  const escapeCell = (val) => {
+    const s = String(val ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [headers.map(h => escapeCell(h.label)).join(",")];
+  rows.forEach(row => {
+    lines.push(headers.map(h => escapeCell(h.get(row))).join(","));
+  });
+  return lines.join("\n");
+}
+
+function downloadCsv(filename, csvText) {
+  const blob = new Blob([csvText], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 /* ---------------------------------------------------------
    Shared UI bits
 --------------------------------------------------------- */
@@ -196,6 +220,7 @@ function ContractBanner() {
       <span className="font-semibold">Contract rules:</span> Comp time must be pre-approved by administration before it's worked.
       Submit within {SUBMIT_WITHIN_DAYS} working days of the date worked. Employees may not accrue more than {MAX_ACCRUAL_HOURS} hours.
       Comp time must be used within {EXPIRES_AFTER_MONTHS} months of the date it was earned.
+      {" "}<a href="https://www.guhsd.net/Departments/Human-Resources/Bargaining-Unit-Contracts/index.html" target="_blank" rel="noopener noreferrer" className="underline font-semibold">See CSEA/SEIU contracts</a>.
     </div>
   );
 }
@@ -254,7 +279,14 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
   const pendingEarnedHours = myEarned.filter(r => r.status === "pending").reduce((s,r) => s + r.extraHours, 0);
   const approvedUsedHours = myUsed.filter(r => r.status === "approved").reduce((s,r) => s + r.totalHours, 0);
   const pendingUsedHours = myUsed.filter(r => r.status === "pending").reduce((s,r) => s + r.totalHours, 0);
-  const availableBalance = Math.max(0, approvedEarnedHours - approvedUsedHours);
+  const expiredEntries = myEarned
+    .filter(r => r.status === "approved")
+    .map(r => ({...r, expiresOn: addMonths(r.dateWorked, EXPIRES_AFTER_MONTHS)}))
+    .filter(r => new Date(r.expiresOn) < new Date());
+  const expiredHours = expiredEntries.reduce((s,r) => s + r.extraHours, 0);
+
+  const nonExpiredApprovedEarnedHours = approvedEarnedHours - expiredHours;
+  const availableBalance = Math.max(0, nonExpiredApprovedEarnedHours - approvedUsedHours);
 
   const expiringSoon = myEarned
     .filter(r => r.status === "approved")
@@ -270,12 +302,19 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
   const [eExtraHours, setEExtraHours] = useState("");
   const [eRegularHours, setERegularHours] = useState("");
   const [eAdmin, setEAdmin] = useState("");
+  const [ePreApproved, setEPreApproved] = useState(false);
+
+  const eLate = eDate ? countWorkingDaysBetween(eDate, isoToday) > SUBMIT_WITHIN_DAYS : false;
 
   function submitEarned(ev) {
     ev.preventDefault();
     setError("");
     if (!eDate || !eReason.trim() || !eExtraHours || eRegularHours === "" || !eAdmin) {
       setError("Please complete every field before submitting.");
+      return;
+    }
+    if (!ePreApproved) {
+      setError("Please confirm this activity was pre-approved by administration before it was worked.");
       return;
     }
     const extraHours = parseFloat(eExtraHours);
@@ -302,12 +341,13 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
       extraHours,
       regularHours,
       adminOverseeing: eAdmin,
+      preApproved: ePreApproved,
       status: "pending",
       submittedAt: new Date().toISOString(),
       decidedAt: null,
       decidedBy: null,
     });
-    setEDate(""); setEReason(""); setEExtraHours(""); setERegularHours(""); setEAdmin("");
+    setEDate(""); setEReason(""); setEExtraHours(""); setERegularHours(""); setEAdmin(""); setEPreApproved(false);
   }
 
   /* --- Used form state --- */
@@ -378,6 +418,13 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
           accent="#B45309"
           warn={expiringSoon.length > 0}
         />
+        <BalanceCard
+          label="Expired & forfeited"
+          value={expiredHours}
+          unit={expiredHours > 0 ? "no longer usable (10-month limit)" : "hours"}
+          accent="#94A3B8"
+          warn={expiredHours > 0}
+        />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
@@ -393,6 +440,11 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1">Date of activity/event worked</label>
                 <input type="date" value={eDate} max={isoToday} onChange={e => setEDate(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
+                {eLate && (
+                  <p className="text-xs text-orange-600 mt-1">
+                    This is more than {SUBMIT_WITHIN_DAYS} working days ago. Per contract, comp time should be submitted within {SUBMIT_WITHIN_DAYS} working days of the date worked — your admin may still review it, but flag this with them.
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1">Name of event worked / reason for comp time</label>
@@ -416,6 +468,11 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
                   {ADMINS.map(a => <option key={a} value={a}>{a}</option>)}
                 </select>
               </div>
+
+              <label className="flex items-start gap-2 text-xs text-slate-600">
+                <input type="checkbox" checked={ePreApproved} onChange={e => setEPreApproved(e.target.checked)} className="mt-0.5" required />
+                I confirm this activity was pre-approved by administration before it was worked, per contract.
+              </label>
 
               {error && <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</p>}
 
@@ -470,8 +527,25 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
         {/* History */}
         <div className="lg:col-span-3 space-y-6">
           <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-100">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
               <h3 className="font-display font-bold text-slate-800">Time earned</h3>
+              <button
+                onClick={() => downloadCsv(
+                  `${employeeName.replace(/\s+/g,"_")}_comp_time_earned.csv`,
+                  toCsv(myEarned, [
+                    { label: "Date Worked", get: r => r.dateWorked },
+                    { label: "Event/Reason", get: r => r.eventReason },
+                    { label: "Extra Hours", get: r => r.extraHours },
+                    { label: "Regular Hours", get: r => r.regularHours },
+                    { label: "Admin", get: r => r.adminOverseeing },
+                    { label: "Status", get: r => r.status },
+                    { label: "Submitted", get: r => r.submittedAt },
+                  ])
+                )}
+                className="text-xs font-semibold text-[#1E3A5F] hover:underline"
+              >
+                Export CSV
+              </button>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -488,23 +562,46 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
                   {myEarned.length === 0 && (
                     <tr><td colSpan={5} className="px-6 py-8 text-center text-slate-400">No earned time logged yet.</td></tr>
                   )}
-                  {myEarned.map(r => (
+                  {myEarned.map(r => {
+                    const isExpired = r.status === "approved" && new Date(addMonths(r.dateWorked, EXPIRES_AFTER_MONTHS)) < new Date();
+                    return (
                     <tr key={r.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
                       <td className="px-6 py-3 text-slate-700 whitespace-nowrap">{fmtDate(r.dateWorked)}</td>
                       <td className="px-4 py-3 text-slate-500 max-w-[160px] truncate" title={r.eventReason}>{r.eventReason}</td>
                       <td className="px-4 py-3 text-slate-700">{r.extraHours}</td>
                       <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{r.adminOverseeing}</td>
-                      <td className="px-6 py-3"><StatusBadge status={r.status} /></td>
+                      <td className="px-6 py-3">
+                        <StatusBadge status={r.status} />
+                        {isExpired && <span className="badge badge-warn ml-1">Expired</span>}
+                      </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           </div>
 
           <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-100">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
               <h3 className="font-display font-bold text-slate-800">Time used</h3>
+              <button
+                onClick={() => downloadCsv(
+                  `${employeeName.replace(/\s+/g,"_")}_comp_time_used.csv`,
+                  toCsv(myUsed, [
+                    { label: "Date of Leave", get: r => r.dateOfLeave },
+                    { label: "Start Time", get: r => r.startTime },
+                    { label: "End Time", get: r => r.endTime },
+                    { label: "Total Hours", get: r => r.totalHours },
+                    { label: "Reason", get: r => r.reason },
+                    { label: "Status", get: r => r.status },
+                    { label: "Submitted", get: r => r.submittedAt },
+                  ])
+                )}
+                className="text-xs font-semibold text-[#0F766E] hover:underline"
+              >
+                Export CSV
+              </button>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -556,12 +653,17 @@ function ManagerView({ earned, used, auditLog, onApprove, onReject }) {
   );
 
   const balances = useMemo(() => {
+    const today = new Date();
     return ROSTER.map(person => {
-      const eA = earned.filter(r => r.employeeId === person.id && r.status === "approved").reduce((s,r) => s + r.extraHours, 0);
+      const myEarned = earned.filter(r => r.employeeId === person.id && r.status === "approved");
+      const eA = myEarned.reduce((s,r) => s + r.extraHours, 0);
+      const eExpired = myEarned
+        .filter(r => new Date(addMonths(r.dateWorked, EXPIRES_AFTER_MONTHS)) < today)
+        .reduce((s,r) => s + r.extraHours, 0);
       const uA = used.filter(r => r.employeeId === person.id && r.status === "approved").reduce((s,r) => s + r.totalHours, 0);
       const eP = earned.filter(r => r.employeeId === person.id && r.status === "pending").reduce((s,r) => s + r.extraHours, 0);
       const uP = used.filter(r => r.employeeId === person.id && r.status === "pending").reduce((s,r) => s + r.totalHours, 0);
-      return { ...person, balance: Math.max(0, eA - uA), pendingEarned: eP, pendingUsed: uP };
+      return { ...person, balance: Math.max(0, (eA - eExpired) - uA), pendingEarned: eP, pendingUsed: uP };
     }).filter(p => p.balance > 0 || p.pendingEarned > 0 || p.pendingUsed > 0);
   }, [earned, used]);
 
@@ -569,9 +671,52 @@ function ManagerView({ earned, used, auditLog, onApprove, onReject }) {
 
   return (
     <div className="fade-in space-y-6">
-      <div>
-        <h2 className="font-display text-2xl font-bold text-slate-800">Manager dashboard</h2>
-        <p className="text-sm text-slate-500">Review comp time requests and monitor staff balances.</p>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="font-display text-2xl font-bold text-slate-800">Manager dashboard</h2>
+          <p className="text-sm text-slate-500">Review comp time requests and monitor staff balances.</p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => downloadCsv(
+              "comp_time_earned_all_staff.csv",
+              toCsv(earned, [
+                { label: "Employee", get: r => nameOf(r.employeeId) },
+                { label: "Date Worked", get: r => r.dateWorked },
+                { label: "Event/Reason", get: r => r.eventReason },
+                { label: "Extra Hours", get: r => r.extraHours },
+                { label: "Regular Hours", get: r => r.regularHours },
+                { label: "Admin", get: r => r.adminOverseeing },
+                { label: "Pre-Approved Confirmed", get: r => r.preApproved ? "Yes" : "No" },
+                { label: "Status", get: r => r.status },
+                { label: "Submitted", get: r => r.submittedAt },
+                { label: "Decided", get: r => r.decidedAt || "" },
+              ])
+            )}
+            className="text-xs font-semibold px-3 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors"
+          >
+            Export earned (CSV)
+          </button>
+          <button
+            onClick={() => downloadCsv(
+              "comp_time_used_all_staff.csv",
+              toCsv(used, [
+                { label: "Employee", get: r => nameOf(r.employeeId) },
+                { label: "Date of Leave", get: r => r.dateOfLeave },
+                { label: "Start Time", get: r => r.startTime },
+                { label: "End Time", get: r => r.endTime },
+                { label: "Total Hours", get: r => r.totalHours },
+                { label: "Reason", get: r => r.reason },
+                { label: "Status", get: r => r.status },
+                { label: "Submitted", get: r => r.submittedAt },
+                { label: "Decided", get: r => r.decidedAt || "" },
+              ])
+            )}
+            className="text-xs font-semibold px-3 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors"
+          >
+            Export used (CSV)
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-4">
