@@ -42,15 +42,23 @@ function isManagerFor(schoolId) {
   return isDistrictAccount() && schoolId in myUserDoc().isManagerFor;
 }
 
-// Validates the OT/straight-time comp-hour math submitted by the client
-// matches the district's actual formula: 1.5x if regular hours worked
-// that day > 0 (true overtime), 1.0x if 0 (e.g. a weekend event).
+// Bounds-check for the comp-hour math: with weekend and daily-8-hour-
+// threshold logic now involved, exact recomputation isn't practical in
+// rules (no day-of-week/date parsing here) — so this checks the result
+// falls within the possible range (straight time floor, 1.5x ceiling)
+// rather than an exact match. A starting-balance (migrated) entry skips
+// this entirely since it isn't a calculated event.
 function compHoursMathIsValid(data) {
-  let expectedExact = data.regularHours > 0 ? data.extraHours * 1.5 : data.extraHours * 1.0;
-  return data.compHoursExact == expectedExact &&
-         data.compHoursRounded >= expectedExact - 0.125 &&
-         data.compHoursRounded <= expectedExact + 0.125 &&
-         data.remainingHours == data.compHoursRounded;
+  return (data.extraHours == null && data.isStartingBalance == true &&
+          data.compHoursRounded > 0 && data.compHoursExact == data.compHoursRounded &&
+          data.remainingHours == data.compHoursRounded)
+      ||
+         (data.extraHours != null &&
+          data.compHoursExact >= data.extraHours &&
+          data.compHoursExact <= data.extraHours * 1.5 &&
+          data.compHoursRounded >= data.extraHours - 0.125 &&
+          data.compHoursRounded <= data.extraHours * 1.5 + 0.125 &&
+          data.remainingHours == data.compHoursRounded);
 }
 
 service cloud.firestore {
@@ -91,10 +99,20 @@ service cloud.firestore {
         request.resource.data.employeeId == request.auth.uid &&
         request.resource.data.status == 'pending' &&
         compHoursMathIsValid(request.resource.data);
-      // Managers (for FIFO drawdown + approve/reject) and superadmins can
-      // update. Employees cannot edit their own submission once created.
+      // Managers (for FIFO drawdown, edits, and void) and superadmins can
+      // update — but the core hour math can never change after creation,
+      // even via a manager update. Only remainingHours (FIFO drawdown),
+      // status/decidedAt, dateWorked (no longer tied to any expiration —
+      // enforced in the app's void-vs-edit logic), eventReason,
+      // adminOverseeingUserId, edits, and void* fields may change.
       allow update: if isDistrictAccount() &&
-        (isManagerFor(resource.data.school) || isSuperAdmin());
+        (isManagerFor(resource.data.school) || isSuperAdmin()) &&
+        request.resource.data.employeeId == resource.data.employeeId &&
+        request.resource.data.extraHours == resource.data.extraHours &&
+        request.resource.data.regularHours == resource.data.regularHours &&
+        request.resource.data.compHoursExact == resource.data.compHoursExact &&
+        request.resource.data.compHoursRounded == resource.data.compHoursRounded &&
+        request.resource.data.otApplied == resource.data.otApplied;
       allow delete: if isSuperAdmin();
     }
 
@@ -109,8 +127,12 @@ service cloud.firestore {
         request.resource.data.employeeId == request.auth.uid &&
         request.resource.data.status == 'pending' &&
         request.resource.data.totalHours > 0;
+      // Same principle: the hours actually drawn from the ledger (totalHours)
+      // can never change after creation, only descriptive fields and status.
       allow update: if isDistrictAccount() &&
-        (isManagerFor(resource.data.school) || isSuperAdmin());
+        (isManagerFor(resource.data.school) || isSuperAdmin()) &&
+        request.resource.data.employeeId == resource.data.employeeId &&
+        request.resource.data.totalHours == resource.data.totalHours;
       allow delete: if isSuperAdmin();
     }
 

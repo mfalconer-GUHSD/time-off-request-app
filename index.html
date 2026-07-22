@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Comp Time Tracker</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%231E3A5F'/%3E%3Ccircle cx='50' cy='54' r='30' fill='none' stroke='%23ffffff' stroke-width='7'/%3E%3Cline x1='50' y1='54' x2='50' y2='34' stroke='%23ffffff' stroke-width='7' stroke-linecap='round'/%3E%3Cline x1='50' y1='54' x2='66' y2='54' stroke='%23ffffff' stroke-width='7' stroke-linecap='round'/%3E%3Crect x='40' y='10' width='20' height='10' rx='4' fill='%23ffffff'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
@@ -87,26 +88,57 @@ const db = firebase.firestore();
 const DISTRICT_DOMAIN = "guhsd.net";
 const MAX_ACCRUAL_HOURS = 24;
 const SUBMIT_WITHIN_DAYS = 5;
-const EXPIRES_AFTER_MONTHS = 10;
 const isoToday = new Date().toISOString().slice(0,10);
 
 function roundToQuarter(n) { return Math.round(n * 4) / 4; }
-function addMonthsToDate(dateStr, months) {
-  const d = new Date(dateStr + "T00:00:00");
-  d.setMonth(d.getMonth() + months);
-  return d;
-}
 /**
- * Matches the district's actual "Earned Comp Time Calc" spreadsheet logic:
- * 1.5x if regular hours worked that day > 0 (true overtime), 1x if 0
- * (e.g. a weekend event). Computed client-side since this app runs on
- * Firebase's free plan (no Cloud Functions to recompute it server-side) —
- * Firestore security rules validate this math on write as a backstop.
+ * Comp time earned calculation:
+ *  - If the date worked falls on a weekend (Sat/Sun), the entire extra-hours
+ *    amount is time-and-a-half — a weekend premium, independent of the
+ *    8-hour threshold below.
+ *  - Otherwise, standard daily overtime: only the portion of the day's
+ *    TOTAL hours (regular + extra) that falls beyond 8 hours is time-and-a-
+ *    half; the rest is straight time. E.g. 6 regular + 3 extra = 9 total,
+ *    so 1 hour is OT (9-8) and 2 hours are straight time.
+ * Computed client-side (no Cloud Function on the free plan); Firestore
+ * rules apply a bounds check as a backstop, not an exact recomputation,
+ * since day-of-week/date branching isn't practical to replicate in rules.
  */
-function computeCompHours(extraHours, regularHours) {
-  const otApplied = regularHours > 0;
-  const compHoursExact = otApplied ? extraHours * 1.5 : extraHours * 1.0;
-  return { otApplied, compHoursExact, compHoursRounded: roundToQuarter(compHoursExact) };
+function computeCompHours(extraHours, regularHours, dateWorkedStr) {
+  const d = new Date(dateWorkedStr + "T00:00:00");
+  const dayOfWeek = d.getDay(); // 0 = Sunday, 6 = Saturday
+  const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+
+  let otHours, straightHours, explanation;
+
+  if (isWeekend) {
+    otHours = extraHours;
+    straightHours = 0;
+    explanation = `Calculated at time-and-a-half because ${fmtDate(dateWorkedStr)} falls on a weekend.`;
+  } else {
+    const totalHoursThatDay = regularHours + extraHours;
+    if (totalHoursThatDay > 8) {
+      otHours = Math.min(extraHours, roundToQuarter(totalHoursThatDay - 8));
+      straightHours = roundToQuarter(extraHours - otHours);
+    } else {
+      otHours = 0;
+      straightHours = extraHours;
+    }
+    if (otHours > 0 && straightHours > 0) {
+      explanation = `${straightHours} hour(s) at straight time and ${otHours} hour(s) at time-and-a-half, because total hours worked that day (${totalHoursThatDay}) exceeded 8.`;
+    } else if (otHours > 0) {
+      explanation = `Calculated at time-and-a-half because total hours worked that day (${totalHoursThatDay}) exceeded 8.`;
+    } else {
+      explanation = `Calculated at straight time — total hours worked that day (${totalHoursThatDay}) did not exceed 8.`;
+    }
+  }
+
+  const compHoursExact = otHours * 1.5 + straightHours * 1.0;
+  return {
+    otApplied: otHours > 0, otHours, straightHours,
+    compHoursExact, compHoursRounded: roundToQuarter(compHoursExact),
+    calcExplanation: explanation,
+  };
 }
 
 /* GUHSD schools — verify against HR/IT before go-live. */
@@ -189,6 +221,7 @@ function StatusBadge({ status, expired }) {
     pending:  { cls: "badge-pending",  label: "Pending" },
     approved: { cls: "badge-approved", label: "Approved" },
     rejected: { cls: "badge-rejected", label: "Rejected" },
+    voided:   { cls: "badge-neutral",  label: "Voided" },
   };
   const m = map[status] || map.pending;
   return <span className={`badge ${m.cls}`}>{m.label}</span>;
@@ -209,8 +242,7 @@ function ContractBanner() {
     <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-5 py-3 text-xs text-indigo-900 leading-relaxed space-y-1">
       <p>
         <span className="font-semibold">Contract rules:</span> Comp time must be pre-approved by administration before it's worked.
-        Submit within {SUBMIT_WITHIN_DAYS} working days of the date worked. Employees may not accrue more than {MAX_ACCRUAL_HOURS} hours.
-        Comp time must be used within {EXPIRES_AFTER_MONTHS} months of the date it was earned, or it is paid out.
+        Submit within {SUBMIT_WITHIN_DAYS} working days of the date worked. Employees may not accrue more than {MAX_ACCRUAL_HOURS} hours — unused comp time rolls over indefinitely as long as your balance stays at or under that cap.
         {" "}<a href="https://www.guhsd.net/Departments/Human-Resources/Bargaining-Unit-Contracts/index.html" target="_blank" rel="noopener noreferrer" className="underline font-semibold">See CSEA/SEIU contracts</a>.
       </p>
       <p className="font-semibold">Comp time is used oldest-first. When a request is approved, hours are drawn from your earliest earned batches before newer ones.</p>
@@ -298,27 +330,17 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
   const today = new Date();
 
   const approvedEarned = earned.filter(r => r.status === "approved");
-  const pendingEarnedHours = earned.filter(r => r.status === "pending").reduce((s,r) => s + (r.extraHours || 0), 0);
+  const pendingEarnedHours = earned.filter(r => r.status === "pending").reduce((s,r) => s + (r.compHoursRounded || r.extraHours || 0), 0);
   const pendingUsedHours = used.filter(r => r.status === "pending").reduce((s,r) => s + (r.totalHours || 0), 0);
 
-  // Oldest-first breakdown of remaining, unexpired earned batches
+  // Oldest-first breakdown of remaining earned batches. No expiration —
+  // comp time rolls over indefinitely as long as the balance stays at or
+  // under the 24-hour cap (per contract).
   const breakdown = approvedEarned
     .filter(r => (r.remainingHours || 0) > 0)
-    .map(r => ({ ...r, expiresOnDate: toDateSafe(r.expiresOn) }))
-    .filter(r => !r.expiresOnDate || r.expiresOnDate > today)
     .sort((a,b) => new Date(a.dateWorked) - new Date(b.dateWorked));
 
   const availableBalance = Math.round(breakdown.reduce((s,r) => s + (r.remainingHours || 0), 0) * 4) / 4;
-
-  const expiredEntries = approvedEarned
-    .map(r => ({ ...r, expiresOnDate: toDateSafe(r.expiresOn) }))
-    .filter(r => (r.remainingHours || 0) > 0 && r.expiresOnDate && r.expiresOnDate <= today);
-
-  const expiringSoon = breakdown.filter(r => {
-    if (!r.expiresOnDate) return false;
-    const days = (r.expiresOnDate - today) / 86400000;
-    return days > 0 && days <= 30;
-  });
 
   /* --- Earned form --- */
   const [eDate, setEDate] = useState("");
@@ -327,11 +349,40 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
   const [eRegularHours, setERegularHours] = useState("");
   const [eManagerId, setEManagerId] = useState("");
   const [ePreApproved, setEPreApproved] = useState(false);
+  const [eIsStartingBalance, setEIsStartingBalance] = useState(false);
   const eLate = eDate ? countWorkingDaysBetween(eDate, isoToday) > SUBMIT_WITHIN_DAYS : false;
+
+  const eExtraNum = parseFloat(eExtraHours);
+  const eRegularNum = parseFloat(eRegularHours);
+  const livePreview = (!eIsStartingBalance && eDate && !isNaN(eExtraNum) && eExtraNum > 0 && !isNaN(eRegularNum) && eRegularNum >= 0)
+    ? computeCompHours(eExtraNum, eRegularNum, eDate)
+    : null;
 
   async function submitEarned(ev) {
     ev.preventDefault();
     setError("");
+
+    if (eIsStartingBalance) {
+      const hours = parseFloat(eExtraHours);
+      if (isNaN(hours) || hours <= 0) { setError("Enter a positive number of hours."); return; }
+      if (!eManagerId) { setError("Please choose an approving manager."); return; }
+      const projected = availableBalance + pendingEarnedHours + roundToQuarter(hours);
+      if (projected > MAX_ACCRUAL_HOURS) {
+        setError(`This would put your accrued balance over the ${MAX_ACCRUAL_HOURS}-hour contract limit. Talk to your admin before submitting.`);
+        return;
+      }
+      await onSubmitEarned({
+        eventReason: eReason.trim() || "Starting balance carried over from previous system",
+        dateWorked: eDate || isoToday, extraHours: null, regularHours: null, otApplied: null,
+        compHoursExact: roundToQuarter(hours), compHoursRounded: roundToQuarter(hours), remainingHours: roundToQuarter(hours),
+        calcExplanation: "Migrated starting balance — no overtime calculation applied.",
+        adminOverseeingUserId: eManagerId, preApproved: true, isStartingBalance: true,
+        managerNotified: false,
+      });
+      setEDate(""); setEReason(""); setEExtraHours(""); setERegularHours(""); setEManagerId(""); setEIsStartingBalance(false);
+      return;
+    }
+
     if (!eDate || !eReason.trim() || !eExtraHours || eRegularHours === "" || !eManagerId) {
       setError("Please complete every field before submitting.");
       return;
@@ -345,22 +396,19 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
     if (isNaN(extraHours) || extraHours <= 0) { setError("Extra hours worked must be a positive number."); return; }
     if (isNaN(regularHours) || regularHours < 0) { setError("Regular hours must be zero or positive."); return; }
 
-    // Client-computed — Firestore rules validate this math on write since
-    // there's no Cloud Function to recompute it authoritatively.
-    const { otApplied, compHoursExact, compHoursRounded } = computeCompHours(extraHours, regularHours);
+    // Client-computed — Firestore rules apply a bounds-check backstop since
+    // there's no Cloud Function to recompute the weekend/8-hour logic server-side.
+    const { otApplied, compHoursExact, compHoursRounded, calcExplanation } = computeCompHours(extraHours, regularHours, eDate);
     const projected = availableBalance + pendingEarnedHours + compHoursRounded;
     if (projected > MAX_ACCRUAL_HOURS) {
       setError(`This would put your accrued balance over the ${MAX_ACCRUAL_HOURS}-hour contract limit. Talk to your admin before submitting.`);
       return;
     }
 
-    const expiresOn = addMonthsToDate(eDate, EXPIRES_AFTER_MONTHS);
-
     await onSubmitEarned({
       eventReason: eReason.trim(), dateWorked: eDate, extraHours, regularHours,
-      otApplied, compHoursExact, compHoursRounded, remainingHours: compHoursRounded,
-      expiresOn: firebase.firestore.Timestamp.fromDate(expiresOn),
-      adminOverseeingUserId: eManagerId, preApproved: ePreApproved,
+      otApplied, compHoursExact, compHoursRounded, remainingHours: compHoursRounded, calcExplanation,
+      adminOverseeingUserId: eManagerId, preApproved: ePreApproved, isStartingBalance: false,
       managerNotified: false,
     });
     setEDate(""); setEReason(""); setEExtraHours(""); setERegularHours(""); setEManagerId(""); setEPreApproved(false);
@@ -409,17 +457,13 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
         <BalanceCard label="Available comp time" value={availableBalance} unit="hours to use" accent="#1E3A5F" />
         <BalanceCard label="Pending earned" value={pendingEarnedHours} unit="awaiting approval" accent="#92400E" />
         <BalanceCard label="Pending usage requests" value={pendingUsedHours} unit="awaiting approval" accent="#0F766E" />
-        <BalanceCard
-          label="Expiring within 30 days" value={expiringSoon.reduce((s,r) => s + r.remainingHours, 0)}
-          unit={expiringSoon.length ? "hours — use them soon" : "hours"} accent="#B45309" warn={expiringSoon.length > 0}
-        />
       </div>
 
       {/* Oldest-first breakdown */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-100">
           <h3 className="font-display font-bold text-slate-800">Comp time breakdown (oldest first)</h3>
-          <p className="text-xs text-slate-400 mt-0.5">These are drawn down in this order when a usage request is approved.</p>
+          <p className="text-xs text-slate-400 mt-0.5">These are drawn down in this order when a usage request is approved. No expiration — this rolls over as long as your balance stays at or under the 24-hour cap.</p>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -428,7 +472,7 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
                 <th className="px-6 py-3 font-semibold">Date worked</th>
                 <th className="px-4 py-3 font-semibold">Event</th>
                 <th className="px-4 py-3 font-semibold">Hours remaining</th>
-                <th className="px-6 py-3 font-semibold">Use by</th>
+                <th className="px-6 py-3 font-semibold">How calculated</th>
               </tr>
             </thead>
             <tbody>
@@ -440,7 +484,7 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
                   <td className="px-6 py-3 whitespace-nowrap">{fmtDate(r.dateWorked)}</td>
                   <td className="px-4 py-3 text-slate-500 max-w-[160px] truncate">{r.eventReason}</td>
                   <td className="px-4 py-3 font-semibold">{r.remainingHours}</td>
-                  <td className="px-6 py-3 whitespace-nowrap">{r.expiresOnDate ? r.expiresOnDate.toLocaleDateString() : "—"}</td>
+                  <td className="px-6 py-3 text-slate-500 max-w-[220px] text-xs">{r.calcExplanation || "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -448,19 +492,6 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
         </div>
       </div>
 
-      {expiredEntries.length > 0 && (
-        <div className="bg-slate-50 border border-slate-200 rounded-xl px-5 py-4 text-sm text-slate-700">
-          <p className="font-semibold mb-2">Expired — payout required</p>
-          <ul className="list-disc list-inside space-y-1">
-            {expiredEntries.map(r => (
-              <li key={r.id}>{r.eventReason} ({fmtDate(r.dateWorked)}) — {r.remainingHours} hours</li>
-            ))}
-          </ul>
-          <p className="mt-2">Submit a timesheet for these at{" "}
-            <a href="https://app.informedk12.com/districts/guhsd/directory" target="_blank" rel="noopener noreferrer" className="underline font-semibold">InformedK12</a>.
-          </p>
-        </div>
-      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
         <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 p-6 h-fit">
@@ -471,26 +502,52 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
 
           {tab === "earned" ? (
             <form onSubmit={submitEarned} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Date of activity/event worked</label>
-                <input type="date" value={eDate} max={isoToday} onChange={e => setEDate(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
-                {eLate && <p className="text-xs text-orange-600 mt-1">More than {SUBMIT_WITHIN_DAYS} working days ago — flag this with your admin.</p>}
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Event / reason for comp time</label>
-                <input type="text" value={eReason} onChange={e => setEReason(e.target.value)} placeholder="Name/reason only — no dates" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">Extra hours worked</label>
-                  <input type="number" step="0.25" min="0" value={eExtraHours} onChange={e => setEExtraHours(e.target.value)} placeholder="e.g. 1.75" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">Regular hours that day</label>
-                  <input type="number" step="0.25" min="0" value={eRegularHours} onChange={e => setERegularHours(e.target.value)} placeholder="e.g. 8" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
-                </div>
-              </div>
-              <p className="text-xs text-slate-400 -mt-2">If regular hours &gt; 0, comp time is calculated at time-and-a-half. If it's 0 (e.g. a weekend event), it's straight time.</p>
+              <label className="flex items-start gap-2 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                <input type="checkbox" checked={eIsStartingBalance} onChange={e => setEIsStartingBalance(e.target.checked)} className="mt-0.5" />
+                This is a starting balance carried over from before this system (not a new event to calculate overtime for).
+              </label>
+
+              {eIsStartingBalance ? (
+                <>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">Hours to credit</label>
+                    <input type="number" step="0.25" min="0" value={eExtraHours} onChange={e => setEExtraHours(e.target.value)} placeholder="e.g. 12" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">Note (optional)</label>
+                    <input type="text" value={eReason} onChange={e => setEReason(e.target.value)} placeholder="e.g. Carried over from prior tracking spreadsheet" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">Date of activity/event worked</label>
+                    <input type="date" value={eDate} max={isoToday} onChange={e => setEDate(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
+                    {eLate && <p className="text-xs text-orange-600 mt-1">More than {SUBMIT_WITHIN_DAYS} working days ago — flag this with your admin.</p>}
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">Event / reason for comp time</label>
+                    <input type="text" value={eReason} onChange={e => setEReason(e.target.value)} placeholder="Name/reason only — no dates" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">Extra hours worked</label>
+                      <input type="number" step="0.25" min="0" value={eExtraHours} onChange={e => setEExtraHours(e.target.value)} placeholder="e.g. 1.75" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">Regular hours that day</label>
+                      <input type="number" step="0.25" min="0" value={eRegularHours} onChange={e => setERegularHours(e.target.value)} placeholder="e.g. 8" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-400 -mt-2">Time-and-a-half applies to hours beyond 8 total in a day, or to all hours if the event is on a weekend.</p>
+                  {livePreview && (
+                    <div className="bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 text-xs text-indigo-900">
+                      <span className="font-semibold">{livePreview.compHoursRounded} comp hours.</span> {livePreview.calcExplanation}
+                    </div>
+                  )}
+                </>
+              )}
+
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1">Admin overseeing (also your approver)</label>
                 <select value={eManagerId} onChange={e => setEManagerId(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" required>
@@ -499,10 +556,12 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
                 </select>
                 {managers.length === 0 && <p className="text-xs text-orange-600 mt-1">No approving manager is set up for your school yet — contact your admin.</p>}
               </div>
-              <label className="flex items-start gap-2 text-xs text-slate-600">
-                <input type="checkbox" checked={ePreApproved} onChange={e => setEPreApproved(e.target.checked)} className="mt-0.5" required />
-                I confirm this activity was pre-approved by administration before it was worked, per contract.
-              </label>
+              {!eIsStartingBalance && (
+                <label className="flex items-start gap-2 text-xs text-slate-600">
+                  <input type="checkbox" checked={ePreApproved} onChange={e => setEPreApproved(e.target.checked)} className="mt-0.5" required />
+                  I confirm this activity was pre-approved by administration before it was worked, per contract.
+                </label>
+              )}
               {error && <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</p>}
               <p className="text-xs text-slate-400">One entry per date — don't bundle multiple dates into a single submission.</p>
               <button type="submit" className="w-full bg-[#1E3A5F] hover:bg-[#16304f] text-white font-semibold text-sm rounded-lg py-2.5 transition-colors">Submit earned time</button>
@@ -559,7 +618,15 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
               { label: "Date worked", render: r => fmtDate(r.dateWorked) },
               { label: "Event", render: r => r.eventReason },
               { label: "Hours", render: r => r.compHoursRounded ?? r.extraHours },
-              { label: "Status", render: r => <StatusBadge status={r.status} expired={r.status === "approved" && toDateSafe(r.expiresOn) && toDateSafe(r.expiresOn) <= today && r.remainingHours > 0} /> },
+              { label: "Status", render: r => (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <StatusBadge status={r.status} />
+                  {r.status === "voided" && r.voidNote && <span className="text-xs text-slate-400" title={r.voidNote}>— {r.voidNote}</span>}
+                  {r.edits && r.edits.length > 0 && r.status !== "voided" && (
+                    <span className="badge badge-neutral" title={r.edits.map(ed => `${ed.field}: "${ed.oldValue}" → "${ed.newValue}" (by ${ed.editedByName})`).join("\n")}>Adjusted</span>
+                  )}
+                </div>
+              ) },
             ]}
             csvHeaders={[
               { label: "Date Worked", get: r => r.dateWorked }, { label: "Event", get: r => r.eventReason },
@@ -572,7 +639,15 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
               { label: "Date", render: r => fmtDate(r.dateOfLeave) },
               { label: "Time", render: r => `${fmtTime(r.startTime)}–${fmtTime(r.endTime)}` },
               { label: "Hours", render: r => r.totalHours },
-              { label: "Status", render: r => <StatusBadge status={r.status} /> },
+              { label: "Status", render: r => (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <StatusBadge status={r.status} />
+                  {r.status === "voided" && r.voidNote && <span className="text-xs text-slate-400" title={r.voidNote}>— {r.voidNote}</span>}
+                  {r.edits && r.edits.length > 0 && r.status !== "voided" && (
+                    <span className="badge badge-neutral" title={r.edits.map(ed => `${ed.field}: "${ed.oldValue}" → "${ed.newValue}" (by ${ed.editedByName})`).join("\n")}>Adjusted</span>
+                  )}
+                </div>
+              ) },
             ]}
             csvHeaders={[
               { label: "Date", get: r => r.dateOfLeave }, { label: "Hours", get: r => r.totalHours }, { label: "Status", get: r => r.status },
@@ -615,7 +690,7 @@ function HistoryTable({ title, rows, columns, csvHeaders, exportName }) {
 /* ---------------------------------------------------------
    Manager View
 --------------------------------------------------------- */
-function ManagerView({ me, pendingEarned, pendingUsed, auditLog, onDecide }) {
+function ManagerView({ me, pendingEarned, pendingUsed, auditLog, onDecide, allEarned, allUsed, managers, onApplyEdit, onVoidEarned, onVoidUsed }) {
   return (
     <div className="fade-in space-y-6">
       <div>
@@ -684,6 +759,8 @@ function ManagerView({ me, pendingEarned, pendingUsed, auditLog, onDecide }) {
         </div>
       </div>
 
+      <AllRequestsPanel allEarned={allEarned} allUsed={allUsed} managers={managers} onApplyEdit={onApplyEdit} onVoidEarned={onVoidEarned} onVoidUsed={onVoidUsed} />
+
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-100"><h3 className="font-display font-bold text-slate-800">Audit log</h3></div>
         <div className="overflow-x-auto max-h-80 overflow-y-auto">
@@ -703,6 +780,280 @@ function ManagerView({ me, pendingEarned, pendingUsed, auditLog, onDecide }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   All Requests — searchable full history + edit/void controls
+--------------------------------------------------------- */
+function AllRequestsPanel({ allEarned, allUsed, managers, onApplyEdit, onVoidEarned, onVoidUsed }) {
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+
+  function matches(row, dateField) {
+    if (search && !row.employeeName.toLowerCase().includes(search.toLowerCase())) return false;
+    if (statusFilter !== "all" && row.status !== statusFilter) return false;
+    if (dateFrom && row[dateField] < dateFrom) return false;
+    if (dateTo && row[dateField] > dateTo) return false;
+    return true;
+  }
+
+  const filteredEarned = allEarned.filter(r => matches(r, "dateWorked")).sort((a,b) => new Date(b.dateWorked) - new Date(a.dateWorked));
+  const filteredUsed = allUsed.filter(r => matches(r, "dateOfLeave")).sort((a,b) => new Date(b.dateOfLeave) - new Date(a.dateOfLeave));
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div className="px-6 py-4 border-b border-slate-100">
+        <h3 className="font-display font-bold text-slate-800">All requests</h3>
+        <p className="text-xs text-slate-400 mt-0.5">Every request submitted at your school(s), regardless of status.</p>
+      </div>
+      <div className="px-6 py-4 border-b border-slate-100 flex flex-wrap gap-3 items-end">
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Search employee</label>
+          <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Name…" className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm" />
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Status</label>
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm bg-white">
+            <option value="all">All</option>
+            <option value="pending">Pending</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+            <option value="voided">Voided</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">From</label>
+          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm" />
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">To</label>
+          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm" />
+        </div>
+        {(search || statusFilter !== "all" || dateFrom || dateTo) && (
+          <button onClick={() => { setSearch(""); setStatusFilter("all"); setDateFrom(""); setDateTo(""); }} className="text-xs font-semibold text-slate-500 hover:text-slate-700 underline">
+            Clear filters
+          </button>
+        )}
+      </div>
+
+      <div className="px-6 pt-4 pb-1 flex items-center justify-between">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Earned ({filteredEarned.length})</p>
+        <button
+          onClick={() => downloadCsv("comp_time_earned_export.csv", toCsv(filteredEarned, [
+            { label: "Employee", get: r => r.employeeName }, { label: "Date Worked", get: r => r.dateWorked },
+            { label: "Event/Reason", get: r => r.eventReason }, { label: "Hours", get: r => r.compHoursRounded },
+            { label: "Status", get: r => r.status }, { label: "Void Note", get: r => r.voidNote || "" },
+          ]))}
+          className="text-xs font-semibold text-[#1E3A5F] hover:underline"
+        >Export CSV</button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
+              <th className="px-6 py-3 font-semibold">Employee</th><th className="px-4 py-3 font-semibold">Date</th>
+              <th className="px-4 py-3 font-semibold">Reason</th><th className="px-4 py-3 font-semibold">Admin</th>
+              <th className="px-4 py-3 font-semibold">Hours</th><th className="px-4 py-3 font-semibold">Status</th>
+              <th className="px-6 py-3 font-semibold text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredEarned.length === 0 && <tr><td colSpan={7} className="px-6 py-8 text-center text-slate-400">No matching requests.</td></tr>}
+            {filteredEarned.map(r => (
+              <EditableEarnedRow key={r.id} row={r} managers={managers} onApplyEdit={onApplyEdit} onVoidEarned={onVoidEarned} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="px-6 pt-4 pb-1 flex items-center justify-between">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Used ({filteredUsed.length})</p>
+        <button
+          onClick={() => downloadCsv("comp_time_used_export.csv", toCsv(filteredUsed, [
+            { label: "Employee", get: r => r.employeeName }, { label: "Date of Leave", get: r => r.dateOfLeave },
+            { label: "Reason", get: r => r.reason }, { label: "Hours", get: r => r.totalHours },
+            { label: "Status", get: r => r.status }, { label: "Void Note", get: r => r.voidNote || "" },
+          ]))}
+          className="text-xs font-semibold text-[#0F766E] hover:underline"
+        >Export CSV</button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
+              <th className="px-6 py-3 font-semibold">Employee</th><th className="px-4 py-3 font-semibold">Date</th>
+              <th className="px-4 py-3 font-semibold">Reason</th><th className="px-4 py-3 font-semibold">Hours</th>
+              <th className="px-4 py-3 font-semibold">Status</th><th className="px-6 py-3 font-semibold text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredUsed.length === 0 && <tr><td colSpan={6} className="px-6 py-8 text-center text-slate-400">No matching requests.</td></tr>}
+            {filteredUsed.map(r => (
+              <EditableUsedRow key={r.id} row={r} onApplyEdit={onApplyEdit} onVoidUsed={onVoidUsed} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function EditableEarnedRow({ row, managers, onApplyEdit, onVoidEarned }) {
+  const [editing, setEditing] = useState(false);
+  const [reason, setReason] = useState(row.eventReason);
+  const [adminId, setAdminId] = useState(row.adminOverseeingUserId);
+  const [date, setDate] = useState(row.dateWorked);
+
+  const isUntouched = (row.remainingHours || 0) === (row.compHoursRounded || 0);
+  const canVoid = row.status === "approved" && isUntouched;
+  const dateLocked = !isUntouched;
+
+  async function save() {
+    if (reason.trim() !== row.eventReason) await onApplyEdit("earned", row.id, "eventReason", reason.trim(), row);
+    if (adminId !== row.adminOverseeingUserId) {
+      await onApplyEdit("earned", row.id, "adminOverseeingUserId", adminId, row);
+    }
+    if (!dateLocked && date !== row.dateWorked) await onApplyEdit("earned", row.id, "dateWorked", date, row);
+    setEditing(false);
+  }
+
+  function handleVoid() {
+    const note = window.prompt("Reason for voiding this entry? (required, visible to the employee)");
+    if (note && note.trim()) onVoidEarned(row, note.trim());
+  }
+
+  if (row.status === "voided") {
+    return (
+      <tr className="border-b border-slate-50 last:border-0 opacity-60">
+        <td className="px-6 py-3 font-medium text-slate-800">{row.employeeName}</td>
+        <td className="px-4 py-3 whitespace-nowrap">{fmtDate(row.dateWorked)}</td>
+        <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate">{row.eventReason}</td>
+        <td className="px-4 py-3 text-slate-500 whitespace-nowrap">—</td>
+        <td className="px-4 py-3">{row.compHoursRounded}</td>
+        <td className="px-4 py-3"><StatusBadge status="voided" /></td>
+        <td className="px-6 py-3 text-right text-xs text-slate-400" title={row.voidNote}>{row.voidNote}</td>
+      </tr>
+    );
+  }
+
+  if (editing) {
+    return (
+      <tr className="border-b border-slate-50 last:border-0 bg-slate-50/60">
+        <td className="px-6 py-3 font-medium text-slate-800">{row.employeeName}</td>
+        <td className="px-4 py-3">
+          <input type="date" value={date} disabled={dateLocked} onChange={e => setDate(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-xs w-32 disabled:bg-slate-100 disabled:text-slate-400" />
+          {dateLocked && <p className="text-[10px] text-orange-600 mt-0.5">Already used — void to correct.</p>}
+        </td>
+        <td className="px-4 py-3"><input type="text" value={reason} onChange={e => setReason(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-xs w-full" /></td>
+        <td className="px-4 py-3">
+          <select value={adminId} onChange={e => setAdminId(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-xs bg-white">
+            {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        </td>
+        <td className="px-4 py-3">{row.compHoursRounded}</td>
+        <td className="px-4 py-3"><StatusBadge status={row.status} /></td>
+        <td className="px-6 py-3">
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => setEditing(false)} className="text-xs font-semibold px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-100">Cancel</button>
+            <button onClick={save} className="text-xs font-semibold px-2 py-1 rounded bg-[#1E3A5F] text-white hover:bg-[#16304f]">Save</button>
+          </div>
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <tr className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
+      <td className="px-6 py-3 font-medium text-slate-800">{row.employeeName}</td>
+      <td className="px-4 py-3 whitespace-nowrap">{fmtDate(row.dateWorked)}</td>
+      <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate">{row.eventReason}</td>
+      <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{(managers.find(m => m.id === row.adminOverseeingUserId) || {}).name || "—"}</td>
+      <td className="px-4 py-3">{row.compHoursRounded}</td>
+      <td className="px-4 py-3">
+        <StatusBadge status={row.status} />
+        {row.edits && row.edits.length > 0 && <span className="badge badge-neutral ml-1">Adjusted</span>}
+      </td>
+      <td className="px-6 py-3">
+        <div className="flex gap-2 justify-end">
+          <button onClick={() => setEditing(true)} className="text-xs font-semibold px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-100">Edit</button>
+          {row.status === "approved" && (
+            canVoid
+              ? <button onClick={handleVoid} className="text-xs font-semibold px-2 py-1 rounded border border-rose-200 text-rose-700 hover:bg-rose-50">Void</button>
+              : <span className="text-xs text-slate-400" title="Already partially or fully used — contact superadmin to correct.">Void unavailable</span>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function EditableUsedRow({ row, onApplyEdit, onVoidUsed }) {
+  const [editing, setEditing] = useState(false);
+  const [reason, setReason] = useState(row.reason);
+
+  async function save() {
+    if (reason.trim() !== row.reason) await onApplyEdit("used", row.id, "reason", reason.trim(), row);
+    setEditing(false);
+  }
+
+  function handleVoid() {
+    const note = window.prompt("Reason for voiding this usage request? Hours will be credited back to the employee. (required, visible to the employee)");
+    if (note && note.trim()) onVoidUsed(row, note.trim());
+  }
+
+  if (row.status === "voided") {
+    return (
+      <tr className="border-b border-slate-50 last:border-0 opacity-60">
+        <td className="px-6 py-3 font-medium text-slate-800">{row.employeeName}</td>
+        <td className="px-4 py-3 whitespace-nowrap">{fmtDate(row.dateOfLeave)}</td>
+        <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate">{row.reason}</td>
+        <td className="px-4 py-3">{row.totalHours}</td>
+        <td className="px-4 py-3"><StatusBadge status="voided" /></td>
+        <td className="px-6 py-3 text-right text-xs text-slate-400" title={row.voidNote}>{row.voidNote}</td>
+      </tr>
+    );
+  }
+
+  if (editing) {
+    return (
+      <tr className="border-b border-slate-50 last:border-0 bg-slate-50/60">
+        <td className="px-6 py-3 font-medium text-slate-800">{row.employeeName}</td>
+        <td className="px-4 py-3 whitespace-nowrap">{fmtDate(row.dateOfLeave)}</td>
+        <td className="px-4 py-3"><input type="text" value={reason} onChange={e => setReason(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-xs w-full" /></td>
+        <td className="px-4 py-3">{row.totalHours}</td>
+        <td className="px-4 py-3"><StatusBadge status={row.status} /></td>
+        <td className="px-6 py-3">
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => setEditing(false)} className="text-xs font-semibold px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-100">Cancel</button>
+            <button onClick={save} className="text-xs font-semibold px-2 py-1 rounded bg-[#1E3A5F] text-white hover:bg-[#16304f]">Save</button>
+          </div>
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <tr className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
+      <td className="px-6 py-3 font-medium text-slate-800">{row.employeeName}</td>
+      <td className="px-4 py-3 whitespace-nowrap">{fmtDate(row.dateOfLeave)}</td>
+      <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate">{row.reason}</td>
+      <td className="px-4 py-3">{row.totalHours}</td>
+      <td className="px-4 py-3">
+        <StatusBadge status={row.status} />
+        {row.edits && row.edits.length > 0 && <span className="badge badge-neutral ml-1">Adjusted</span>}
+      </td>
+      <td className="px-6 py-3">
+        <div className="flex gap-2 justify-end">
+          <button onClick={() => setEditing(true)} className="text-xs font-semibold px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-100">Edit</button>
+          {row.status === "approved" && (
+            <button onClick={handleVoid} className="text-xs font-semibold px-2 py-1 rounded border border-rose-200 text-rose-700 hover:bg-rose-50">Void</button>
+          )}
+        </div>
+      </td>
+    </tr>
   );
 }
 
@@ -750,6 +1101,8 @@ function App() {
   const [managers, setManagers] = useState([]);
   const [pendingEarned, setPendingEarned] = useState([]);
   const [pendingUsed, setPendingUsed] = useState([]);
+  const [allEarnedForSchool, setAllEarnedForSchool] = useState([]);
+  const [allUsedForSchool, setAllUsedForSchool] = useState([]);
   const [auditLog, setAuditLog] = useState([]);
 
   useEffect(() => auth.onAuthStateChanged(u => setAuthUser(u)), []);
@@ -806,7 +1159,12 @@ function App() {
       .onSnapshot(s => setPendingUsed(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const u3 = db.collection("auditLog").orderBy("ts", "desc").limit(100)
       .onSnapshot(s => setAuditLog(s.docs.map(d => ({ id: d.id, ...d.data() }))));
-    return () => { u1(); u2(); u3(); };
+    // Full history (all statuses) at the manager's schools, for the searchable All Requests view.
+    const u4 = db.collection("earnedRequests").where("school", "in", schools)
+      .onSnapshot(s => setAllEarnedForSchool(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+    const u5 = db.collection("usedRequests").where("school", "in", schools)
+      .onSnapshot(s => setAllUsedForSchool(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+    return () => { u1(); u2(); u3(); u4(); u5(); };
   }, [canManage, me && JSON.stringify(me.isManagerFor)]);
 
   const handleChooseSchool = useCallback(async (school) => {
@@ -850,7 +1208,6 @@ function App() {
       // no Cloud Function to do this server-side on the free plan).
       const usedSnap = await ref.get();
       const usedData = usedSnap.data();
-      const today = new Date();
 
       const earnedSnap = await db.collection("earnedRequests")
         .where("employeeId", "==", usedData.employeeId)
@@ -860,8 +1217,7 @@ function App() {
 
       const eligible = earnedSnap.docs.filter(d => {
         const e = d.data();
-        const expiresOn = e.expiresOn && e.expiresOn.toDate ? e.expiresOn.toDate() : new Date(e.expiresOn);
-        return (e.remainingHours || 0) > 0 && expiresOn > today;
+        return (e.remainingHours || 0) > 0;
       });
 
       let remainingToCover = usedData.totalHours;
@@ -896,6 +1252,70 @@ function App() {
     }
   }, []);
 
+  const handleApplyEdit = useCallback(async (kind, id, field, newValue, currentRow) => {
+    const collection = kind === "earned" ? "earnedRequests" : "usedRequests";
+    const ref = db.collection(collection).doc(id);
+    const oldValue = currentRow[field];
+
+    const updates = { [field]: newValue };
+
+    const editEntry = {
+      ts: new Date().toISOString(), field,
+      oldValue: oldValue ?? "", newValue: newValue ?? "",
+      editedByName: me.name,
+    };
+    updates.edits = firebase.firestore.FieldValue.arrayUnion(editEntry);
+
+    await ref.update(updates);
+    await db.collection("auditLog").add({
+      ts: firebase.firestore.FieldValue.serverTimestamp(),
+      action: `${me.name} adjusted ${currentRow.employeeName}'s ${kind === "earned" ? "earned" : "usage"} request (${field}: "${oldValue}" → "${newValue}")`,
+      school: currentRow.school,
+    });
+  }, [me]);
+
+  const handleVoidEarned = useCallback(async (row, note) => {
+    if ((row.remainingHours || 0) !== (row.compHoursRounded || 0)) {
+      alert("This entry has already been partially or fully used and can't be voided automatically — contact your superadmin to correct it manually.");
+      return;
+    }
+    await db.collection("earnedRequests").doc(row.id).update({
+      status: "voided",
+      voidedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      voidedByName: me.name,
+      voidNote: note,
+    });
+    await db.collection("auditLog").add({
+      ts: firebase.firestore.FieldValue.serverTimestamp(),
+      action: `${me.name} voided ${row.employeeName}'s earned comp time (${row.compHoursRounded} hrs) — ${note}`,
+      school: row.school,
+    });
+  }, [me]);
+
+  const handleVoidUsed = useCallback(async (row, note) => {
+    const batch = db.batch();
+    for (const alloc of row.allocations || []) {
+      const eRef = db.collection("earnedRequests").doc(alloc.earnedRequestId);
+      const eDoc = await eRef.get();
+      if (eDoc.exists) {
+        const current = eDoc.data().remainingHours || 0;
+        batch.update(eRef, { remainingHours: roundToQuarter(current + alloc.hoursDrawn) });
+      }
+    }
+    batch.update(db.collection("usedRequests").doc(row.id), {
+      status: "voided",
+      voidedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      voidedByName: me.name,
+      voidNote: note,
+    });
+    await batch.commit();
+    await db.collection("auditLog").add({
+      ts: firebase.firestore.FieldValue.serverTimestamp(),
+      action: `${me.name} voided ${row.employeeName}'s comp time usage (${row.totalHours} hrs) — hours credited back — ${note}`,
+      school: row.school,
+    });
+  }, [me]);
+
   if (authUser === undefined) {
     return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;
   }
@@ -916,7 +1336,11 @@ function App() {
         {view === "employee" || !canManage ? (
           <EmployeeView me={me} earned={earned} used={used} managers={managers} onSubmitEarned={handleSubmitEarned} onSubmitUsed={handleSubmitUsed} />
         ) : (
-          <ManagerView me={me} pendingEarned={pendingEarned} pendingUsed={pendingUsed} auditLog={auditLog} onDecide={handleDecide} />
+          <ManagerView
+            me={me} pendingEarned={pendingEarned} pendingUsed={pendingUsed} auditLog={auditLog} onDecide={handleDecide}
+            allEarned={allEarnedForSchool} allUsed={allUsedForSchool} managers={managers}
+            onApplyEdit={handleApplyEdit} onVoidEarned={handleVoidEarned} onVoidUsed={handleVoidUsed}
+          />
         )}
       </main>
       <footer className="max-w-6xl mx-auto px-6 pb-8 text-xs text-slate-400">

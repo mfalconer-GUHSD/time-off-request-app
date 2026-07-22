@@ -19,8 +19,8 @@ workflow, which is also free. Most of the Firebase setup is automated by
 ## 1. Run the automated setup
 
 ```bash
-git clone https://github.com/mfalconer-GUHSD/time-off-request-app.git
-cd time-off-request-app
+git clone https://github.com/mfalconer-GUHSD/guhsd-comp-time-tracker.git
+cd guhsd-comp-time-tracker
 bash setup.sh
 ```
 
@@ -61,7 +61,7 @@ since it's a single field on a single document, one time only.
 
 Since there's no Cloud Functions, a scheduled GitHub Actions workflow
 (already in this repo at `.github/workflows/notifications.yml`) checks
-every 15 minutes for new requests and expiring/expired comp time, and
+every 15 minutes for new requests and
 sends the emails. It needs a Firebase service account key and your SMTP
 credentials, stored as **GitHub repo secrets** (never committed to code).
 
@@ -136,18 +136,24 @@ website. Confirm it against HR/IT's authoritative list before go-live.
       access regardless of what the client does).
 - [ ] Pick a school, confirm the manager dropdown is empty until you (as
       superadmin) grant someone a manager role for that school.
-- [ ] Submit an earned-time entry, confirm the OT/straight-time math
-      matches the spreadsheet's logic (1.5x if regular hours > 0, 1x if 0).
+- [ ] Submit an earned-time entry with regular+extra hours totaling over 8
+      on a weekday — confirm only the portion beyond 8 gets 1.5x (not the
+      whole amount).
+- [ ] Submit an earned-time entry dated on a Saturday/Sunday — confirm the
+      entire amount is 1.5x regardless of the 8-hour math.
 - [ ] Approve/reject from the in-app dashboard, confirm Firestore updates
       correctly.
 - [ ] Submit and approve a usage request that spans two earned batches —
       confirm the oldest batch is drawn down first (check `remainingHours`
       on each earned entry in Firestore after approval).
+- [ ] Confirm balances roll over with no forced expiration — approved
+      earned hours should remain usable indefinitely as long as the
+      24-hour cap isn't exceeded.
+- [ ] As a manager, edit a pending/approved entry's reason or admin, and
+      void an untouched approved entry — confirm the employee's view shows
+      "Adjusted"/"Voided" with the note.
 - [ ] Manually trigger the GitHub Actions workflow and confirm you receive
       a "new request" email.
-- [ ] Manually backdate an earned entry's `expiresOn` field in Firestore
-      to yesterday, trigger the workflow, and confirm the payout email
-      goes out with the correct event/date/hours.
 
 ## Known tradeoffs of this no-billing-account architecture
 
