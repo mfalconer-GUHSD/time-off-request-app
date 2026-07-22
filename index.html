@@ -9,7 +9,7 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
 
 <!-- Firebase (compat SDK — simplest to use without a build step) -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -70,12 +70,14 @@ const { useState, useEffect, useMemo, useCallback } = React;
    Get this from: Firebase Console -> Project Settings -> General -> Your apps
    ========================================================================= */
 const firebaseConfig = {
-  apiKey: "REPLACE_ME",
-  authDomain: "REPLACE_ME.firebaseapp.com",
-  projectId: "REPLACE_ME",
-  storageBucket: "REPLACE_ME.appspot.com",
-  messagingSenderId: "REPLACE_ME",
-  appId: "REPLACE_ME",
+  "projectId": "guhsd-comp-time",
+  "appId": "1:543235508723:web:7c31a5a85a28f7ef29ea86",
+  "storageBucket": "guhsd-comp-time.firebasestorage.app",
+  "apiKey": "AIzaSyB_qsQKVhmcwM4cggpBoeRBhS0LsCmIHqQ",
+  "authDomain": "guhsd-comp-time.firebaseapp.com",
+  "messagingSenderId": "543235508723",
+  "projectNumber": "543235508723",
+  "version": "2"
 };
 
 firebase.initializeApp(firebaseConfig);
