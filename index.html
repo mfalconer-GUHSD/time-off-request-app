@@ -10,6 +10,13 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+
+<!-- Firebase (compat SDK — simplest to use without a build step) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-functions-compat.js"></script>
+
 <style>
   html, body, #root { height: 100%; }
   body { font-family: 'Inter', sans-serif; background: #F5F6F8; }
@@ -36,6 +43,7 @@
   .badge-approved { background:#D1FAE5; color:#065F46; }
   .badge-rejected { background:#FEE2E2; color:#991B1B; }
   .badge-warn { background:#FFEDD5; color:#9A3412; }
+  .badge-neutral { background:#F1F5F9; color:#475569; }
 
   .tab-btn { padding:8px 16px; font-size:13px; font-weight:600; border-radius:9999px; transition:.15s; }
   .tab-btn.active { background:#1E3A5F; color:white; }
@@ -44,11 +52,9 @@
 
   .fade-in { animation: fadeIn .25s ease both; }
   @keyframes fadeIn { from { opacity:0; transform: translateY(4px);} to { opacity:1; transform:none; } }
-
   @media (prefers-reduced-motion: reduce) {
     .switch-thumb, .switch-track, .fade-in { transition: none !important; animation: none !important; }
   }
-
   input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
     outline: 2px solid #1E3A5F; outline-offset: 2px;
   }
@@ -60,67 +66,52 @@
 <script type="text/babel">
 const { useState, useEffect, useMemo, useCallback } = React;
 
-/* ---------------------------------------------------------
-   Constants
-   NOTE: There is no hardcoded staff roster. Identity comes from
-   what's entered at login (name + district email), which stands
-   in for the eventual Google Sign-In restricted to @guhsd.net.
---------------------------------------------------------- */
-const STORAGE_KEY = "comp_time_tracker_v2";
+/* =========================================================================
+   FIREBASE CONFIG — REPLACE WITH YOUR PROJECT'S VALUES
+   Get this from: Firebase Console -> Project Settings -> General -> Your apps
+   ========================================================================= */
+const firebaseConfig = {
+  apiKey: "REPLACE_ME",
+  authDomain: "REPLACE_ME.firebaseapp.com",
+  projectId: "REPLACE_ME",
+  storageBucket: "REPLACE_ME.appspot.com",
+  messagingSenderId: "REPLACE_ME",
+  appId: "REPLACE_ME",
+};
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+const functions = firebase.functions();
+
 const DISTRICT_DOMAIN = "guhsd.net";
-
-const ADMINS = ["April Baker", "Lindsay Abbott", "John Hoadley", "Brie Pagano", "Abby Fazekas"];
-// ^ Carried over from the Comp Time form you shared. Flag if this list is also
-//   specific to a different site and needs to change.
-
 const MAX_ACCRUAL_HOURS = 24;
-const SUBMIT_WITHIN_DAYS = 5;   // working days
+const SUBMIT_WITHIN_DAYS = 5;
 const EXPIRES_AFTER_MONTHS = 10;
 const isoToday = new Date().toISOString().slice(0,10);
 
-/* ---------------------------------------------------------
-   Seed data — clearly-fictional example people, for demo purposes only
---------------------------------------------------------- */
-const seedEarned = [
-  { id: "e1", employeeId: "jexample@guhsd.net", employeeName: "Jordan Example", eventReason: "Back to School Night coverage", dateWorked: "2026-07-09", extraHours: 2, regularHours: 8, adminOverseeing: "April Baker", preApproved: true, status: "approved", submittedAt: "2026-07-10T15:00:00Z", decidedAt: "2026-07-10T18:00:00Z", decidedBy: "April Baker" },
-  { id: "e2", employeeId: "sdemo@guhsd.net", employeeName: "Sam Demo", eventReason: "Varsity football game supervision", dateWorked: "2026-07-17", extraHours: 3.5, regularHours: 8, adminOverseeing: "John Hoadley", preApproved: true, status: "pending", submittedAt: "2026-07-18T13:20:00Z", decidedAt: null, decidedBy: null },
+/* GUHSD schools — verify against HR/IT before go-live. */
+const SCHOOLS = [
+  "El Cajon Valley High School","El Capitan High School","Granite Hills High School",
+  "Grossmont High School","Helix Charter High School","IDEA Center High School",
+  "Monte Vista High School","Mount Miguel High School","Santana High School",
+  "Steele Canyon High School","Valhalla High School","West Hills High School",
+  "Chaparral High School","Grossmont Middle College High School","REACH Academy",
+  "ELITE Academy","MERIT Academy","Grossmont Adult Education",
+  "The Learning Choice Academy","Home Choice Health Occupations Center",
 ];
-
-const seedUsed = [
-  { id: "u1", employeeId: "jexample@guhsd.net", employeeName: "Jordan Example", dateOfLeave: "2026-07-15", startTime: "13:00", endTime: "15:00", totalHours: 2, reason: "Personal appointment", status: "approved", submittedAt: "2026-07-12T09:00:00Z", decidedAt: "2026-07-12T14:00:00Z", decidedBy: "April Baker" },
-];
-
-const seedAuditLog = [
-  { id: "a1", ts: "2026-07-10T15:00:00Z", actor: "Jordan Example", action: "Logged 2 comp hours earned (Back to School Night coverage)" },
-  { id: "a2", ts: "2026-07-10T18:00:00Z", actor: "April Baker", action: "Approved Jordan Example's earned comp time (2 hrs)" },
-  { id: "a3", ts: "2026-07-12T09:00:00Z", actor: "Jordan Example", action: "Requested to use 2 comp hours" },
-  { id: "a4", ts: "2026-07-12T14:00:00Z", actor: "April Baker", action: "Approved Jordan Example's comp time usage (2 hrs)" },
-  { id: "a5", ts: "2026-07-18T13:20:00Z", actor: "Sam Demo", action: "Logged 3.5 comp hours earned (Varsity football game supervision)" },
-];
-
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch (e) {}
-  return { earned: seedEarned, used: seedUsed, auditLog: seedAuditLog, currentUser: null };
-}
-function saveState(state) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
-}
 
 /* ---------------------------------------------------------
    Helpers
 --------------------------------------------------------- */
-function uid(prefix) { return prefix + "_" + Math.random().toString(36).slice(2, 9); }
-
 function fmtDate(iso) {
   if (!iso) return "—";
   return new Date(iso + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
-function fmtDateTime(iso) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+function fmtDateTime(ts) {
+  if (!ts) return "—";
+  const d = ts.toDate ? ts.toDate() : new Date(ts);
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 function fmtTime(t) {
   if (!t) return "";
@@ -133,14 +124,13 @@ function hoursBetween(startTime, endTime, tookLunch) {
   const [sh, sm] = startTime.split(":").map(Number);
   const [eh, em] = endTime.split(":").map(Number);
   const mins = (eh * 60 + em) - (sh * 60 + sm);
-  let hours = Math.round((mins / 60) * 4) / 4; // nearest quarter hour
-  if (hours >= 5 && tookLunch) hours -= 0.5; // unpaid 30-min lunch on 5+ hour days
+  let hours = Math.round((mins / 60) * 4) / 4;
+  if (hours >= 5 && tookLunch) hours -= 0.5;
   return Math.round(hours * 4) / 4;
 }
-function addMonths(dateISO, months) {
-  const d = new Date(dateISO + "T00:00:00");
-  d.setMonth(d.getMonth() + months);
-  return d.toISOString().slice(0,10);
+function toDateSafe(v) {
+  if (!v) return null;
+  return v.toDate ? v.toDate() : new Date(v);
 }
 function countWorkingDaysBetween(startISO, endISO) {
   let count = 0;
@@ -153,35 +143,29 @@ function countWorkingDaysBetween(startISO, endISO) {
   }
   return count;
 }
-
 function toCsv(rows, headers) {
   const escapeCell = (val) => {
     const s = String(val ?? "");
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = [headers.map(h => escapeCell(h.label)).join(",")];
-  rows.forEach(row => {
-    lines.push(headers.map(h => escapeCell(h.get(row))).join(","));
-  });
+  rows.forEach(row => lines.push(headers.map(h => escapeCell(h.get(row))).join(",")));
   return lines.join("\n");
 }
-
 function downloadCsv(filename, csvText) {
   const blob = new Blob([csvText], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
 
 /* ---------------------------------------------------------
    Shared UI bits
 --------------------------------------------------------- */
-function StatusBadge({ status }) {
+function StatusBadge({ status, expired }) {
+  if (expired) return <span className="badge badge-neutral">Expired</span>;
   const map = {
     pending:  { cls: "badge-pending",  label: "Pending" },
     approved: { cls: "badge-approved", label: "Approved" },
@@ -203,76 +187,83 @@ function BalanceCard({ label, value, unit, accent, warn }) {
 
 function ContractBanner() {
   return (
-    <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-5 py-3 text-xs text-indigo-900 leading-relaxed">
-      <span className="font-semibold">Contract rules:</span> Comp time must be pre-approved by administration before it's worked.
-      Submit within {SUBMIT_WITHIN_DAYS} working days of the date worked. Employees may not accrue more than {MAX_ACCRUAL_HOURS} hours.
-      Comp time must be used within {EXPIRES_AFTER_MONTHS} months of the date it was earned.
-      {" "}<a href="https://www.guhsd.net/Departments/Human-Resources/Bargaining-Unit-Contracts/index.html" target="_blank" rel="noopener noreferrer" className="underline font-semibold">See CSEA/SEIU contracts</a>.
+    <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-5 py-3 text-xs text-indigo-900 leading-relaxed space-y-1">
+      <p>
+        <span className="font-semibold">Contract rules:</span> Comp time must be pre-approved by administration before it's worked.
+        Submit within {SUBMIT_WITHIN_DAYS} working days of the date worked. Employees may not accrue more than {MAX_ACCRUAL_HOURS} hours.
+        Comp time must be used within {EXPIRES_AFTER_MONTHS} months of the date it was earned, or it is paid out.
+        {" "}<a href="https://www.guhsd.net/Departments/Human-Resources/Bargaining-Unit-Contracts/index.html" target="_blank" rel="noopener noreferrer" className="underline font-semibold">See CSEA/SEIU contracts</a>.
+      </p>
+      <p className="font-semibold">Comp time is used oldest-first. When a request is approved, hours are drawn from your earliest earned batches before newer ones.</p>
     </div>
   );
 }
 
 /* ---------------------------------------------------------
-   Login (name + district email, stands in for domain-restricted
-   Google Sign-In). No fixed roster — anyone with an @guhsd.net
-   address can sign in, matching the eventual SSO behavior.
+   Login — Google Sign-In restricted to the district domain
 --------------------------------------------------------- */
-function LoginScreen({ onLogin }) {
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+function LoginScreen({ onError }) {
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  function handleSubmit(e) {
-    e.preventDefault();
+  async function handleGoogleSignIn() {
+    setBusy(true);
     setError("");
-    const trimmedName = name.trim();
-    const trimmedEmail = email.trim().toLowerCase();
-    if (!trimmedName || !trimmedEmail) {
-      setError("Please enter your name and district email.");
-      return;
+    const provider = new firebase.auth.GoogleAuthProvider();
+    provider.setCustomParameters({ hd: DISTRICT_DOMAIN }); // hints the account chooser only — real enforcement is server-side
+    try {
+      const result = await auth.signInWithPopup(provider);
+      const email = (result.user.email || "").toLowerCase();
+      if (!email.endsWith("@" + DISTRICT_DOMAIN)) {
+        await auth.signOut();
+        setError(`Please sign in with your @${DISTRICT_DOMAIN} account.`);
+      }
+    } catch (e) {
+      setError(e.message || "Sign-in failed. Please try again.");
+    } finally {
+      setBusy(false);
     }
-    if (!trimmedEmail.endsWith("@" + DISTRICT_DOMAIN)) {
-      setError(`Please sign in with your @${DISTRICT_DOMAIN} account.`);
-      return;
-    }
-    onLogin({ id: trimmedEmail, name: trimmedName });
   }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#1E3A5F] px-6">
-      <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-sm fade-in">
+      <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-sm fade-in text-center">
         <h1 className="font-display text-xl font-bold text-slate-800 mb-1">Comp Time Tracker</h1>
-        <p className="text-sm text-slate-500 mb-6">Sign in to continue</p>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Full name</label>
-            <input
-              type="text" value={name} onChange={e => setName(e.target.value)}
-              placeholder="e.g. Jordan Rivera"
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">District email</label>
-            <input
-              type="email" value={email} onChange={e => setEmail(e.target.value)}
-              placeholder={`you@${DISTRICT_DOMAIN}`}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
-          </div>
+        <p className="text-sm text-slate-500 mb-6">Sign in with your district Google account</p>
+        <button
+          onClick={handleGoogleSignIn}
+          disabled={busy}
+          className="w-full bg-[#1E3A5F] disabled:opacity-40 hover:bg-[#16304f] text-white font-semibold text-sm rounded-lg py-2.5 transition-colors"
+        >
+          {busy ? "Signing in…" : `Sign in with @${DISTRICT_DOMAIN} Google account`}
+        </button>
+        {error && <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2 mt-4">{error}</p>}
+      </div>
+    </div>
+  );
+}
 
-          {error && <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</p>}
-
-          <button
-            type="submit"
-            className="w-full bg-[#1E3A5F] hover:bg-[#16304f] text-white font-semibold text-sm rounded-lg py-2.5 transition-colors"
-          >
-            Continue
-          </button>
-        </form>
-        <p className="text-xs text-slate-400 mt-4 text-center">
-          Prototype login — production will use Google Sign-In restricted to @{DISTRICT_DOMAIN} accounts.
-        </p>
+/* ---------------------------------------------------------
+   First-login school picker
+--------------------------------------------------------- */
+function SchoolPicker({ onChoose }) {
+  const [school, setSchool] = useState("");
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[#1E3A5F] px-6">
+      <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-sm fade-in">
+        <h1 className="font-display text-xl font-bold text-slate-800 mb-1">Which school are you at?</h1>
+        <p className="text-sm text-slate-500 mb-6">This determines who approves your comp time requests. You (or IT) can update this later if you transfer.</p>
+        <select value={school} onChange={e => setSchool(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white mb-4">
+          <option value="">Choose your school…</option>
+          {SCHOOLS.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <button
+          disabled={!school}
+          onClick={() => onChoose(school)}
+          className="w-full bg-[#1E3A5F] disabled:opacity-40 hover:bg-[#16304f] text-white font-semibold text-sm rounded-lg py-2.5 transition-colors"
+        >
+          Continue
+        </button>
       </div>
     </div>
   );
@@ -281,54 +272,48 @@ function LoginScreen({ onLogin }) {
 /* ---------------------------------------------------------
    Employee View
 --------------------------------------------------------- */
-function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, onSubmitUsed }) {
+function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed }) {
   const [tab, setTab] = useState("earned");
   const [error, setError] = useState("");
 
-  const myEarned = useMemo(
-    () => earned.filter(r => r.employeeId === employeeId).sort((a,b) => new Date(b.submittedAt) - new Date(a.submittedAt)),
-    [earned, employeeId]
-  );
-  const myUsed = useMemo(
-    () => used.filter(r => r.employeeId === employeeId).sort((a,b) => new Date(b.submittedAt) - new Date(a.submittedAt)),
-    [used, employeeId]
-  );
+  const today = new Date();
 
-  const approvedEarnedHours = myEarned.filter(r => r.status === "approved").reduce((s,r) => s + r.extraHours, 0);
-  const pendingEarnedHours = myEarned.filter(r => r.status === "pending").reduce((s,r) => s + r.extraHours, 0);
-  const approvedUsedHours = myUsed.filter(r => r.status === "approved").reduce((s,r) => s + r.totalHours, 0);
-  const pendingUsedHours = myUsed.filter(r => r.status === "pending").reduce((s,r) => s + r.totalHours, 0);
-  const expiredEntries = myEarned
-    .filter(r => r.status === "approved")
-    .map(r => ({...r, expiresOn: addMonths(r.dateWorked, EXPIRES_AFTER_MONTHS)}))
-    .filter(r => new Date(r.expiresOn) < new Date());
-  const expiredHours = expiredEntries.reduce((s,r) => s + r.extraHours, 0);
+  const approvedEarned = earned.filter(r => r.status === "approved");
+  const pendingEarnedHours = earned.filter(r => r.status === "pending").reduce((s,r) => s + (r.extraHours || 0), 0);
+  const pendingUsedHours = used.filter(r => r.status === "pending").reduce((s,r) => s + (r.totalHours || 0), 0);
 
-  const nonExpiredApprovedEarnedHours = approvedEarnedHours - expiredHours;
-  const availableBalance = Math.max(0, nonExpiredApprovedEarnedHours - approvedUsedHours);
+  // Oldest-first breakdown of remaining, unexpired earned batches
+  const breakdown = approvedEarned
+    .filter(r => (r.remainingHours || 0) > 0)
+    .map(r => ({ ...r, expiresOnDate: toDateSafe(r.expiresOn) }))
+    .filter(r => !r.expiresOnDate || r.expiresOnDate > today)
+    .sort((a,b) => new Date(a.dateWorked) - new Date(b.dateWorked));
 
-  const expiringSoon = myEarned
-    .filter(r => r.status === "approved")
-    .map(r => ({...r, expiresOn: addMonths(r.dateWorked, EXPIRES_AFTER_MONTHS)}))
-    .filter(r => {
-      const days = (new Date(r.expiresOn) - new Date()) / 86400000;
-      return days > 0 && days <= 30;
-    });
+  const availableBalance = Math.round(breakdown.reduce((s,r) => s + (r.remainingHours || 0), 0) * 4) / 4;
 
-  /* --- Earned form state --- */
+  const expiredEntries = approvedEarned
+    .map(r => ({ ...r, expiresOnDate: toDateSafe(r.expiresOn) }))
+    .filter(r => (r.remainingHours || 0) > 0 && r.expiresOnDate && r.expiresOnDate <= today);
+
+  const expiringSoon = breakdown.filter(r => {
+    if (!r.expiresOnDate) return false;
+    const days = (r.expiresOnDate - today) / 86400000;
+    return days > 0 && days <= 30;
+  });
+
+  /* --- Earned form --- */
   const [eDate, setEDate] = useState("");
   const [eReason, setEReason] = useState("");
   const [eExtraHours, setEExtraHours] = useState("");
   const [eRegularHours, setERegularHours] = useState("");
-  const [eAdmin, setEAdmin] = useState("");
+  const [eManagerId, setEManagerId] = useState("");
   const [ePreApproved, setEPreApproved] = useState(false);
-
   const eLate = eDate ? countWorkingDaysBetween(eDate, isoToday) > SUBMIT_WITHIN_DAYS : false;
 
-  function submitEarned(ev) {
+  async function submitEarned(ev) {
     ev.preventDefault();
     setError("");
-    if (!eDate || !eReason.trim() || !eExtraHours || eRegularHours === "" || !eAdmin) {
+    if (!eDate || !eReason.trim() || !eExtraHours || eRegularHours === "" || !eManagerId) {
       setError("Please complete every field before submitting.");
       return;
     }
@@ -338,92 +323,59 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
     }
     const extraHours = parseFloat(eExtraHours);
     const regularHours = parseFloat(eRegularHours);
-    if (isNaN(extraHours) || extraHours <= 0) {
-      setError("Extra hours worked must be a positive number (e.g. 1.75).");
-      return;
-    }
-    if (isNaN(regularHours) || regularHours < 0) {
-      setError("Regular work hours must be zero or a positive number.");
-      return;
-    }
-    const projectedTotal = approvedEarnedHours + pendingEarnedHours + extraHours - approvedUsedHours;
-    if (projectedTotal > MAX_ACCRUAL_HOURS) {
+    if (isNaN(extraHours) || extraHours <= 0) { setError("Extra hours worked must be a positive number."); return; }
+    if (isNaN(regularHours) || regularHours < 0) { setError("Regular hours must be zero or positive."); return; }
+
+    // Client-side estimate only — the Cloud Function recomputes this
+    // authoritatively (with the OT/straight-time multiplier) on write.
+    const estimate = regularHours > 0 ? extraHours * 1.5 : extraHours;
+    const projected = availableBalance + pendingEarnedHours + estimate;
+    if (projected > MAX_ACCRUAL_HOURS) {
       setError(`This would put your accrued balance over the ${MAX_ACCRUAL_HOURS}-hour contract limit. Talk to your admin before submitting.`);
       return;
     }
 
-    onSubmitEarned({
-      id: uid("e"),
-      employeeId,
-      employeeName,
-      eventReason: eReason.trim(),
-      dateWorked: eDate,
-      extraHours,
-      regularHours,
-      adminOverseeing: eAdmin,
-      preApproved: ePreApproved,
-      status: "pending",
-      submittedAt: new Date().toISOString(),
-      decidedAt: null,
-      decidedBy: null,
+    await onSubmitEarned({
+      eventReason: eReason.trim(), dateWorked: eDate, extraHours, regularHours,
+      adminOverseeingUserId: eManagerId, preApproved: ePreApproved,
     });
-    setEDate(""); setEReason(""); setEExtraHours(""); setERegularHours(""); setEAdmin(""); setEPreApproved(false);
+    setEDate(""); setEReason(""); setEExtraHours(""); setERegularHours(""); setEManagerId(""); setEPreApproved(false);
   }
 
-  /* --- Used form state --- */
+  /* --- Used form --- */
   const [uDate, setUDate] = useState("");
   const [uStart, setUStart] = useState("");
   const [uEnd, setUEnd] = useState("");
   const [uReason, setUReason] = useState("");
   const [uTookLunch, setUTookLunch] = useState(true);
+  const [uManagerId, setUManagerId] = useState("");
 
-  const rawUsedSpan = (uStart && uEnd) ? hoursBetween(uStart, uEnd, false) : null;
+  const rawSpan = (uStart && uEnd) ? hoursBetween(uStart, uEnd, false) : null;
   const computedUsedHours = (uStart && uEnd) ? hoursBetween(uStart, uEnd, uTookLunch) : null;
-  const lunchApplies = rawUsedSpan !== null && rawUsedSpan >= 5;
+  const lunchApplies = rawSpan !== null && rawSpan >= 5;
+  const shortNotice = uDate ? ((new Date(uDate) - today) / 86400000) < 14 : false;
 
-  function submitUsed(ev) {
+  async function submitUsed(ev) {
     ev.preventDefault();
     setError("");
-    if (!uDate || !uStart || !uEnd) {
-      setError("Please choose a date, start time, and end time.");
-      return;
-    }
-    if (uEnd <= uStart) {
-      setError("End time must be after the start time.");
-      return;
-    }
+    if (!uDate || !uStart || !uEnd || !uManagerId) { setError("Please complete every field."); return; }
+    if (uEnd <= uStart) { setError("End time must be after the start time."); return; }
     const totalHours = hoursBetween(uStart, uEnd, uTookLunch);
-    if (totalHours <= 0) {
-      setError("Please select a valid time range.");
-      return;
-    }
-    if (totalHours > availableBalance) {
-      setError(`You only have ${availableBalance} comp hour${availableBalance === 1 ? "" : "s"} available.`);
-      return;
-    }
+    if (totalHours <= 0) { setError("Please select a valid time range."); return; }
+    if (totalHours > availableBalance) { setError(`You only have ${availableBalance} comp hours available.`); return; }
 
-    onSubmitUsed({
-      id: uid("u"),
-      employeeId,
-      employeeName,
-      dateOfLeave: uDate,
-      startTime: uStart,
-      endTime: uEnd,
-      totalHours,
-      reason: uReason.trim() || "—",
-      status: "pending",
-      submittedAt: new Date().toISOString(),
-      decidedAt: null,
-      decidedBy: null,
+    await onSubmitUsed({
+      dateOfLeave: uDate, startTime: uStart, endTime: uEnd, totalHours,
+      reason: uReason.trim() || "—", adminOverseeingUserId: uManagerId,
     });
-    setUDate(""); setUStart(""); setUEnd(""); setUReason(""); setUTookLunch(true);
+    setUDate(""); setUStart(""); setUEnd(""); setUReason(""); setUTookLunch(true); setUManagerId("");
   }
 
   return (
     <div className="fade-in space-y-6">
       <div>
-        <h2 className="font-display text-2xl font-bold text-slate-800">Welcome back, {employeeName.split(" ")[0]}</h2>
-        <p className="text-sm text-slate-500">Comp time balance &amp; requests</p>
+        <h2 className="font-display text-2xl font-bold text-slate-800">Welcome back, {me.name.split(" ")[0]}</h2>
+        <p className="text-sm text-slate-500">{me.school}</p>
       </div>
 
       <ContractBanner />
@@ -433,23 +385,59 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
         <BalanceCard label="Pending earned" value={pendingEarnedHours} unit="awaiting approval" accent="#92400E" />
         <BalanceCard label="Pending usage requests" value={pendingUsedHours} unit="awaiting approval" accent="#0F766E" />
         <BalanceCard
-          label="Expiring within 30 days"
-          value={expiringSoon.reduce((s,r) => s + r.extraHours, 0)}
-          unit={expiringSoon.length ? "hours — use them soon" : "hours"}
-          accent="#B45309"
-          warn={expiringSoon.length > 0}
-        />
-        <BalanceCard
-          label="Expired & forfeited"
-          value={expiredHours}
-          unit={expiredHours > 0 ? "no longer usable (10-month limit)" : "hours"}
-          accent="#94A3B8"
-          warn={expiredHours > 0}
+          label="Expiring within 30 days" value={expiringSoon.reduce((s,r) => s + r.remainingHours, 0)}
+          unit={expiringSoon.length ? "hours — use them soon" : "hours"} accent="#B45309" warn={expiringSoon.length > 0}
         />
       </div>
 
+      {/* Oldest-first breakdown */}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100">
+          <h3 className="font-display font-bold text-slate-800">Comp time breakdown (oldest first)</h3>
+          <p className="text-xs text-slate-400 mt-0.5">These are drawn down in this order when a usage request is approved.</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
+                <th className="px-6 py-3 font-semibold">Date worked</th>
+                <th className="px-4 py-3 font-semibold">Event</th>
+                <th className="px-4 py-3 font-semibold">Hours remaining</th>
+                <th className="px-6 py-3 font-semibold">Use by</th>
+              </tr>
+            </thead>
+            <tbody>
+              {breakdown.length === 0 && (
+                <tr><td colSpan={4} className="px-6 py-8 text-center text-slate-400">No comp time on the books right now.</td></tr>
+              )}
+              {breakdown.map(r => (
+                <tr key={r.id} className="border-b border-slate-50 last:border-0">
+                  <td className="px-6 py-3 whitespace-nowrap">{fmtDate(r.dateWorked)}</td>
+                  <td className="px-4 py-3 text-slate-500 max-w-[160px] truncate">{r.eventReason}</td>
+                  <td className="px-4 py-3 font-semibold">{r.remainingHours}</td>
+                  <td className="px-6 py-3 whitespace-nowrap">{r.expiresOnDate ? r.expiresOnDate.toLocaleDateString() : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {expiredEntries.length > 0 && (
+        <div className="bg-slate-50 border border-slate-200 rounded-xl px-5 py-4 text-sm text-slate-700">
+          <p className="font-semibold mb-2">Expired — payout required</p>
+          <ul className="list-disc list-inside space-y-1">
+            {expiredEntries.map(r => (
+              <li key={r.id}>{r.eventReason} ({fmtDate(r.dateWorked)}) — {r.remainingHours} hours</li>
+            ))}
+          </ul>
+          <p className="mt-2">Submit a timesheet for these at{" "}
+            <a href="https://app.informedk12.com/districts/guhsd/directory" target="_blank" rel="noopener noreferrer" className="underline font-semibold">InformedK12</a>.
+          </p>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-        {/* Forms */}
         <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 p-6 h-fit">
           <div className="flex gap-2 mb-4">
             <button className={`tab-btn ${tab === "earned" ? "active" : ""}`} onClick={() => { setTab("earned"); setError(""); }}>Log time earned</button>
@@ -461,15 +449,11 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1">Date of activity/event worked</label>
                 <input type="date" value={eDate} max={isoToday} onChange={e => setEDate(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
-                {eLate && (
-                  <p className="text-xs text-orange-600 mt-1">
-                    This is more than {SUBMIT_WITHIN_DAYS} working days ago. Per contract, comp time should be submitted within {SUBMIT_WITHIN_DAYS} working days of the date worked — your admin may still review it, but flag this with them.
-                  </p>
-                )}
+                {eLate && <p className="text-xs text-orange-600 mt-1">More than {SUBMIT_WITHIN_DAYS} working days ago — flag this with your admin.</p>}
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Name of event worked / reason for comp time</label>
-                <input type="text" value={eReason} onChange={e => setEReason(e.target.value)} placeholder="Please provide name/reason only — no dates" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Event / reason for comp time</label>
+                <input type="text" value={eReason} onChange={e => setEReason(e.target.value)} placeholder="Name/reason only — no dates" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -477,37 +461,33 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
                   <input type="number" step="0.25" min="0" value={eExtraHours} onChange={e => setEExtraHours(e.target.value)} placeholder="e.g. 1.75" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">Regular hours worked that day</label>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Regular hours that day</label>
                   <input type="number" step="0.25" min="0" value={eRegularHours} onChange={e => setERegularHours(e.target.value)} placeholder="e.g. 8" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
                 </div>
               </div>
-              <p className="text-xs text-slate-400 -mt-2">15 min = 0.25 · 30 min = 0.50 · 45 min = 0.75 · 1 hr = 1. If you worked 5+ hours without an unpaid 30-min lunch, add 0.50.</p>
+              <p className="text-xs text-slate-400 -mt-2">If regular hours &gt; 0, comp time is calculated at time-and-a-half. If it's 0 (e.g. a weekend event), it's straight time.</p>
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Admin overseeing activity/event</label>
-                <select value={eAdmin} onChange={e => setEAdmin(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" required>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Admin overseeing (also your approver)</label>
+                <select value={eManagerId} onChange={e => setEManagerId(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" required>
                   <option value="">Choose…</option>
-                  {ADMINS.map(a => <option key={a} value={a}>{a}</option>)}
+                  {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                 </select>
+                {managers.length === 0 && <p className="text-xs text-orange-600 mt-1">No approving manager is set up for your school yet — contact your admin.</p>}
               </div>
-
               <label className="flex items-start gap-2 text-xs text-slate-600">
                 <input type="checkbox" checked={ePreApproved} onChange={e => setEPreApproved(e.target.checked)} className="mt-0.5" required />
                 I confirm this activity was pre-approved by administration before it was worked, per contract.
               </label>
-
               {error && <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</p>}
-
-              <p className="text-xs text-slate-400">One entry per date of comp time earned. Please don't bundle multiple dates into a single submission.</p>
-
-              <button type="submit" className="w-full bg-[#1E3A5F] hover:bg-[#16304f] text-white font-semibold text-sm rounded-lg py-2.5 transition-colors">
-                Submit earned time
-              </button>
+              <p className="text-xs text-slate-400">One entry per date — don't bundle multiple dates into a single submission.</p>
+              <button type="submit" className="w-full bg-[#1E3A5F] hover:bg-[#16304f] text-white font-semibold text-sm rounded-lg py-2.5 transition-colors">Submit earned time</button>
             </form>
           ) : (
             <form onSubmit={submitUsed} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1">Date of leave</label>
                 <input type="date" value={uDate} min={isoToday} onChange={e => setUDate(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" required />
+                {shortNotice && <p className="text-xs text-slate-500 mt-1">Requests submitted at least 2 weeks ahead give your admin the best chance to arrange coverage — not required, just helpful.</p>}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -520,139 +500,88 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
                 </div>
               </div>
               <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-600">
-                Total hours of leave: <span className="font-semibold text-slate-800">{computedUsedHours !== null ? computedUsedHours : "—"}</span>
-                <span className="text-xs text-slate-400 block mt-0.5">Calculated automatically from start/end time, rounded to the nearest quarter hour.</span>
+                Total hours: <span className="font-semibold text-slate-800">{computedUsedHours ?? "—"}</span>
+                <span className="text-xs text-slate-400 block mt-0.5">Drawn from your oldest comp time first.</span>
                 {lunchApplies && (
                   <label className="flex items-center gap-2 text-xs text-slate-600 mt-2">
                     <input type="checkbox" checked={!uTookLunch} onChange={e => setUTookLunch(!e.target.checked)} />
-                    I did not take an unpaid 30-minute lunch (don't subtract it)
+                    I did not take an unpaid 30-minute lunch
                   </label>
                 )}
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Reason (optional)</label>
-                <textarea value={uReason} onChange={e => setUReason(e.target.value)} rows={2} placeholder="e.g. Personal appointment" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm resize-none" />
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Approving manager</label>
+                <select value={uManagerId} onChange={e => setUManagerId(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" required>
+                  <option value="">Choose…</option>
+                  {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                </select>
               </div>
-              <p className="text-xs text-slate-400">One entry per day of comp time used. If you need multiple days off, please submit a separate request for each date.</p>
-
-
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Reason (optional)</label>
+                <textarea value={uReason} onChange={e => setUReason(e.target.value)} rows={2} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm resize-none" />
+              </div>
+              <p className="text-xs text-slate-400">One entry per day of comp time used.</p>
               {error && <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</p>}
-
-              <button type="submit" className="w-full bg-[#0F766E] hover:bg-[#0c5f58] text-white font-semibold text-sm rounded-lg py-2.5 transition-colors">
-                Submit usage request
-              </button>
+              <button type="submit" className="w-full bg-[#0F766E] hover:bg-[#0c5f58] text-white font-semibold text-sm rounded-lg py-2.5 transition-colors">Submit usage request</button>
             </form>
           )}
         </div>
 
-        {/* History */}
         <div className="lg:col-span-3 space-y-6">
-          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="font-display font-bold text-slate-800">Time earned</h3>
-              <button
-                onClick={() => downloadCsv(
-                  `${employeeName.replace(/\s+/g,"_")}_comp_time_earned.csv`,
-                  toCsv(myEarned, [
-                    { label: "Date Worked", get: r => r.dateWorked },
-                    { label: "Event/Reason", get: r => r.eventReason },
-                    { label: "Extra Hours", get: r => r.extraHours },
-                    { label: "Regular Hours", get: r => r.regularHours },
-                    { label: "Admin", get: r => r.adminOverseeing },
-                    { label: "Status", get: r => r.status },
-                    { label: "Submitted", get: r => r.submittedAt },
-                  ])
-                )}
-                className="text-xs font-semibold text-[#1E3A5F] hover:underline"
-              >
-                Export CSV
-              </button>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
-                    <th className="px-6 py-3 font-semibold">Date worked</th>
-                    <th className="px-4 py-3 font-semibold">Reason</th>
-                    <th className="px-4 py-3 font-semibold">Hours</th>
-                    <th className="px-4 py-3 font-semibold">Admin</th>
-                    <th className="px-6 py-3 font-semibold">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {myEarned.length === 0 && (
-                    <tr><td colSpan={5} className="px-6 py-8 text-center text-slate-400">No earned time logged yet.</td></tr>
-                  )}
-                  {myEarned.map(r => {
-                    const isExpired = r.status === "approved" && new Date(addMonths(r.dateWorked, EXPIRES_AFTER_MONTHS)) < new Date();
-                    return (
-                    <tr key={r.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
-                      <td className="px-6 py-3 text-slate-700 whitespace-nowrap">{fmtDate(r.dateWorked)}</td>
-                      <td className="px-4 py-3 text-slate-500 max-w-[160px] truncate" title={r.eventReason}>{r.eventReason}</td>
-                      <td className="px-4 py-3 text-slate-700">{r.extraHours}</td>
-                      <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{r.adminOverseeing}</td>
-                      <td className="px-6 py-3">
-                        <StatusBadge status={r.status} />
-                        {isExpired && <span className="badge badge-warn ml-1">Expired</span>}
-                      </td>
-                    </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="font-display font-bold text-slate-800">Time used</h3>
-              <button
-                onClick={() => downloadCsv(
-                  `${employeeName.replace(/\s+/g,"_")}_comp_time_used.csv`,
-                  toCsv(myUsed, [
-                    { label: "Date of Leave", get: r => r.dateOfLeave },
-                    { label: "Start Time", get: r => r.startTime },
-                    { label: "End Time", get: r => r.endTime },
-                    { label: "Total Hours", get: r => r.totalHours },
-                    { label: "Reason", get: r => r.reason },
-                    { label: "Status", get: r => r.status },
-                    { label: "Submitted", get: r => r.submittedAt },
-                  ])
-                )}
-                className="text-xs font-semibold text-[#0F766E] hover:underline"
-              >
-                Export CSV
-              </button>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
-                    <th className="px-6 py-3 font-semibold">Date of leave</th>
-                    <th className="px-4 py-3 font-semibold">Time</th>
-                    <th className="px-4 py-3 font-semibold">Hours</th>
-                    <th className="px-4 py-3 font-semibold">Reason</th>
-                    <th className="px-6 py-3 font-semibold">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {myUsed.length === 0 && (
-                    <tr><td colSpan={5} className="px-6 py-8 text-center text-slate-400">No usage requests yet.</td></tr>
-                  )}
-                  {myUsed.map(r => (
-                    <tr key={r.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
-                      <td className="px-6 py-3 text-slate-700 whitespace-nowrap">{fmtDate(r.dateOfLeave)}</td>
-                      <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{fmtTime(r.startTime)}–{fmtTime(r.endTime)}</td>
-                      <td className="px-4 py-3 text-slate-700">{r.totalHours}</td>
-                      <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate" title={r.reason}>{r.reason}</td>
-                      <td className="px-6 py-3"><StatusBadge status={r.status} /></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <HistoryTable
+            title="Time earned" rows={earned} exportName={`${me.name}_comp_time_earned.csv`}
+            columns={[
+              { label: "Date worked", render: r => fmtDate(r.dateWorked) },
+              { label: "Event", render: r => r.eventReason },
+              { label: "Hours", render: r => r.compHoursRounded ?? r.extraHours },
+              { label: "Status", render: r => <StatusBadge status={r.status} expired={r.status === "approved" && toDateSafe(r.expiresOn) && toDateSafe(r.expiresOn) <= today && r.remainingHours > 0} /> },
+            ]}
+            csvHeaders={[
+              { label: "Date Worked", get: r => r.dateWorked }, { label: "Event", get: r => r.eventReason },
+              { label: "Hours", get: r => r.compHoursRounded ?? r.extraHours }, { label: "Status", get: r => r.status },
+            ]}
+          />
+          <HistoryTable
+            title="Time used" rows={used} exportName={`${me.name}_comp_time_used.csv`}
+            columns={[
+              { label: "Date", render: r => fmtDate(r.dateOfLeave) },
+              { label: "Time", render: r => `${fmtTime(r.startTime)}–${fmtTime(r.endTime)}` },
+              { label: "Hours", render: r => r.totalHours },
+              { label: "Status", render: r => <StatusBadge status={r.status} /> },
+            ]}
+            csvHeaders={[
+              { label: "Date", get: r => r.dateOfLeave }, { label: "Hours", get: r => r.totalHours }, { label: "Status", get: r => r.status },
+            ]}
+          />
         </div>
+      </div>
+    </div>
+  );
+}
+
+function HistoryTable({ title, rows, columns, csvHeaders, exportName }) {
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+        <h3 className="font-display font-bold text-slate-800">{title}</h3>
+        <button onClick={() => downloadCsv(exportName, toCsv(rows, csvHeaders))} className="text-xs font-semibold text-[#1E3A5F] hover:underline">Export CSV</button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
+              {columns.map(c => <th key={c.label} className="px-6 py-3 font-semibold">{c.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && <tr><td colSpan={columns.length} className="px-6 py-8 text-center text-slate-400">Nothing here yet.</td></tr>}
+            {rows.map(r => (
+              <tr key={r.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
+                {columns.map(c => <td key={c.label} className="px-6 py-3 text-slate-700">{c.render(r)}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -661,174 +590,36 @@ function EmployeeView({ employeeId, employeeName, earned, used, onSubmitEarned, 
 /* ---------------------------------------------------------
    Manager View
 --------------------------------------------------------- */
-function ManagerView({ earned, used, auditLog, onApprove, onReject }) {
-  const pendingEarned = useMemo(
-    () => earned.filter(r => r.status === "pending").sort((a,b) => new Date(a.submittedAt) - new Date(b.submittedAt)),
-    [earned]
-  );
-  const pendingUsed = useMemo(
-    () => used.filter(r => r.status === "pending").sort((a,b) => new Date(a.submittedAt) - new Date(b.submittedAt)),
-    [used]
-  );
-
-  // Staff list is derived dynamically from whoever has submitted something —
-  // there's no fixed roster, so this can't enumerate staff with zero activity.
-  const balances = useMemo(() => {
-    const today = new Date();
-    const ids = new Set([...earned.map(r => r.employeeId), ...used.map(r => r.employeeId)]);
-    return Array.from(ids).map(id => {
-      const displayName = (earned.find(r => r.employeeId === id) || used.find(r => r.employeeId === id) || {}).employeeName || id;
-      const myEarned = earned.filter(r => r.employeeId === id && r.status === "approved");
-      const eA = myEarned.reduce((s,r) => s + r.extraHours, 0);
-      const eExpired = myEarned
-        .filter(r => new Date(addMonths(r.dateWorked, EXPIRES_AFTER_MONTHS)) < today)
-        .reduce((s,r) => s + r.extraHours, 0);
-      const uA = used.filter(r => r.employeeId === id && r.status === "approved").reduce((s,r) => s + r.totalHours, 0);
-      const eP = earned.filter(r => r.employeeId === id && r.status === "pending").reduce((s,r) => s + r.extraHours, 0);
-      const uP = used.filter(r => r.employeeId === id && r.status === "pending").reduce((s,r) => s + r.totalHours, 0);
-      return { id, name: displayName, balance: Math.max(0, (eA - eExpired) - uA), pendingEarned: eP, pendingUsed: uP };
-    }).sort((a,b) => a.name.localeCompare(b.name));
-  }, [earned, used]);
-
-  const sortedLog = useMemo(() => [...auditLog].sort((a,b) => new Date(b.ts) - new Date(a.ts)), [auditLog]);
-
+function ManagerView({ me, pendingEarned, pendingUsed, auditLog, onDecide }) {
   return (
     <div className="fade-in space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h2 className="font-display text-2xl font-bold text-slate-800">Manager dashboard</h2>
-          <p className="text-sm text-slate-500">Review comp time requests and monitor staff balances.</p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => downloadCsv(
-              "comp_time_earned_all_staff.csv",
-              toCsv(earned, [
-                { label: "Employee", get: r => r.employeeName },
-                { label: "Date Worked", get: r => r.dateWorked },
-                { label: "Event/Reason", get: r => r.eventReason },
-                { label: "Extra Hours", get: r => r.extraHours },
-                { label: "Regular Hours", get: r => r.regularHours },
-                { label: "Admin", get: r => r.adminOverseeing },
-                { label: "Pre-Approved Confirmed", get: r => r.preApproved ? "Yes" : "No" },
-                { label: "Status", get: r => r.status },
-                { label: "Submitted", get: r => r.submittedAt },
-                { label: "Decided", get: r => r.decidedAt || "" },
-              ])
-            )}
-            className="text-xs font-semibold px-3 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors"
-          >
-            Export earned (CSV)
-          </button>
-          <button
-            onClick={() => downloadCsv(
-              "comp_time_used_all_staff.csv",
-              toCsv(used, [
-                { label: "Employee", get: r => r.employeeName },
-                { label: "Date of Leave", get: r => r.dateOfLeave },
-                { label: "Start Time", get: r => r.startTime },
-                { label: "End Time", get: r => r.endTime },
-                { label: "Total Hours", get: r => r.totalHours },
-                { label: "Reason", get: r => r.reason },
-                { label: "Status", get: r => r.status },
-                { label: "Submitted", get: r => r.submittedAt },
-                { label: "Decided", get: r => r.decidedAt || "" },
-              ])
-            )}
-            className="text-xs font-semibold px-3 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors"
-          >
-            Export used (CSV)
-          </button>
-        </div>
+      <div>
+        <h2 className="font-display text-2xl font-bold text-slate-800">Manager dashboard</h2>
+        <p className="text-sm text-slate-500">Approving for: {me.isManagerFor.join(", ")}</p>
       </div>
 
-      <div className="flex flex-wrap gap-4">
-        <BalanceCard label="Pending earned entries" value={pendingEarned.length} unit="need review" accent="#92400E" />
-        <BalanceCard label="Pending usage requests" value={pendingUsed.length} unit="need review" accent="#0F766E" />
-        <BalanceCard label="Staff with activity" value={balances.length} unit="tracked" accent="#1E3A5F" />
-      </div>
-
-      {/* Pending earned */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100">
-          <h3 className="font-display font-bold text-slate-800">Pending — time earned</h3>
-        </div>
+        <div className="px-6 py-4 border-b border-slate-100"><h3 className="font-display font-bold text-slate-800">Pending — time earned</h3></div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
-                <th className="px-6 py-3 font-semibold">Employee</th>
-                <th className="px-4 py-3 font-semibold">Date worked</th>
-                <th className="px-4 py-3 font-semibold">Reason</th>
-                <th className="px-4 py-3 font-semibold">Hours</th>
-                <th className="px-4 py-3 font-semibold">Admin</th>
-                <th className="px-4 py-3 font-semibold">Submitted</th>
-                <th className="px-6 py-3 font-semibold text-right">Action</th>
-              </tr>
-            </thead>
+            <thead><tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
+              <th className="px-6 py-3 font-semibold">Employee</th><th className="px-4 py-3 font-semibold">School</th>
+              <th className="px-4 py-3 font-semibold">Date</th><th className="px-4 py-3 font-semibold">Reason</th>
+              <th className="px-4 py-3 font-semibold">Hours</th><th className="px-6 py-3 font-semibold text-right">Action</th>
+            </tr></thead>
             <tbody>
-              {pendingEarned.length === 0 && (
-                <tr><td colSpan={7} className="px-6 py-8 text-center text-slate-400">No pending earned-time entries.</td></tr>
-              )}
-              {pendingEarned.map(r => {
-                const late = countWorkingDaysBetween(r.dateWorked, r.submittedAt.slice(0,10)) > SUBMIT_WITHIN_DAYS;
-                return (
-                  <tr key={r.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
-                    <td className="px-6 py-3 font-medium text-slate-800">{r.employeeName}</td>
-                    <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{fmtDate(r.dateWorked)}</td>
-                    <td className="px-4 py-3 text-slate-500 max-w-[160px] truncate" title={r.eventReason}>{r.eventReason}</td>
-                    <td className="px-4 py-3 text-slate-700">{r.extraHours}</td>
-                    <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{r.adminOverseeing}</td>
-                    <td className="px-4 py-3 whitespace-nowrap">
-                      {fmtDateTime(r.submittedAt)}
-                      {late && <span className="badge badge-warn ml-2">Late</span>}
-                    </td>
-                    <td className="px-6 py-3">
-                      <div className="flex gap-2 justify-end">
-                        <button onClick={() => onReject("earned", r.id)} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-rose-200 text-rose-700 hover:bg-rose-50 transition-colors">Reject</button>
-                        <button onClick={() => onApprove("earned", r.id)} className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#0F766E] text-white hover:bg-[#0c5f58] transition-colors">Approve</button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Pending used */}
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100">
-          <h3 className="font-display font-bold text-slate-800">Pending — time usage requests</h3>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
-                <th className="px-6 py-3 font-semibold">Employee</th>
-                <th className="px-4 py-3 font-semibold">Date of leave</th>
-                <th className="px-4 py-3 font-semibold">Time</th>
-                <th className="px-4 py-3 font-semibold">Hours</th>
-                <th className="px-4 py-3 font-semibold">Reason</th>
-                <th className="px-6 py-3 font-semibold text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pendingUsed.length === 0 && (
-                <tr><td colSpan={6} className="px-6 py-8 text-center text-slate-400">No pending usage requests.</td></tr>
-              )}
-              {pendingUsed.map(r => (
+              {pendingEarned.length === 0 && <tr><td colSpan={6} className="px-6 py-8 text-center text-slate-400">Nothing pending.</td></tr>}
+              {pendingEarned.map(r => (
                 <tr key={r.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
                   <td className="px-6 py-3 font-medium text-slate-800">{r.employeeName}</td>
-                  <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{fmtDate(r.dateOfLeave)}</td>
-                  <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{fmtTime(r.startTime)}–{fmtTime(r.endTime)}</td>
-                  <td className="px-4 py-3 text-slate-700">{r.totalHours}</td>
-                  <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate" title={r.reason}>{r.reason}</td>
+                  <td className="px-4 py-3 text-slate-500">{r.school}</td>
+                  <td className="px-4 py-3 whitespace-nowrap">{fmtDate(r.dateWorked)}</td>
+                  <td className="px-4 py-3 text-slate-500 max-w-[160px] truncate">{r.eventReason}</td>
+                  <td className="px-4 py-3">{r.extraHours}</td>
                   <td className="px-6 py-3">
                     <div className="flex gap-2 justify-end">
-                      <button onClick={() => onReject("used", r.id)} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-rose-200 text-rose-700 hover:bg-rose-50 transition-colors">Reject</button>
-                      <button onClick={() => onApprove("used", r.id)} className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#0F766E] text-white hover:bg-[#0c5f58] transition-colors">Approve</button>
+                      <button onClick={() => onDecide("earned", r.id, "reject")} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-rose-200 text-rose-700 hover:bg-rose-50">Reject</button>
+                      <button onClick={() => onDecide("earned", r.id, "approve")} className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#0F766E] text-white hover:bg-[#0c5f58]">Approve</button>
                     </div>
                   </td>
                 </tr>
@@ -838,34 +629,29 @@ function ManagerView({ earned, used, auditLog, onApprove, onReject }) {
         </div>
       </div>
 
-      {/* Staff balances */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100">
-          <h3 className="font-display font-bold text-slate-800">Staff comp time balances</h3>
-        </div>
+        <div className="px-6 py-4 border-b border-slate-100"><h3 className="font-display font-bold text-slate-800">Pending — time usage requests</h3></div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
-                <th className="px-6 py-3 font-semibold">Employee</th>
-                <th className="px-4 py-3 font-semibold">Available</th>
-                <th className="px-4 py-3 font-semibold">Pending earned</th>
-                <th className="px-4 py-3 font-semibold">Pending usage</th>
-              </tr>
-            </thead>
+            <thead><tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
+              <th className="px-6 py-3 font-semibold">Employee</th><th className="px-4 py-3 font-semibold">School</th>
+              <th className="px-4 py-3 font-semibold">Date</th><th className="px-4 py-3 font-semibold">Hours</th>
+              <th className="px-6 py-3 font-semibold text-right">Action</th>
+            </tr></thead>
             <tbody>
-              {balances.length === 0 && (
-                <tr><td colSpan={4} className="px-6 py-8 text-center text-slate-400">No activity yet.</td></tr>
-              )}
-              {balances.map(p => (
-                <tr key={p.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
-                  <td className="px-6 py-3 font-medium text-slate-800">{p.name}</td>
-                  <td className="px-4 py-3 text-slate-700">
-                    {p.balance}
-                    {p.balance > MAX_ACCRUAL_HOURS * 0.9 && <span className="badge badge-warn ml-2">Near cap</span>}
+              {pendingUsed.length === 0 && <tr><td colSpan={5} className="px-6 py-8 text-center text-slate-400">Nothing pending.</td></tr>}
+              {pendingUsed.map(r => (
+                <tr key={r.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
+                  <td className="px-6 py-3 font-medium text-slate-800">{r.employeeName}</td>
+                  <td className="px-4 py-3 text-slate-500">{r.school}</td>
+                  <td className="px-4 py-3 whitespace-nowrap">{fmtDate(r.dateOfLeave)}</td>
+                  <td className="px-4 py-3">{r.totalHours}</td>
+                  <td className="px-6 py-3">
+                    <div className="flex gap-2 justify-end">
+                      <button onClick={() => onDecide("used", r.id, "reject")} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-rose-200 text-rose-700 hover:bg-rose-50">Reject</button>
+                      <button onClick={() => onDecide("used", r.id, "approve")} className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#0F766E] text-white hover:bg-[#0c5f58]">Approve</button>
+                    </div>
                   </td>
-                  <td className="px-4 py-3 text-slate-500">{p.pendingEarned || "—"}</td>
-                  <td className="px-4 py-3 text-slate-500">{p.pendingUsed || "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -873,25 +659,17 @@ function ManagerView({ earned, used, auditLog, onApprove, onReject }) {
         </div>
       </div>
 
-      {/* Audit log */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100">
-          <h3 className="font-display font-bold text-slate-800">Audit log</h3>
-        </div>
+        <div className="px-6 py-4 border-b border-slate-100"><h3 className="font-display font-bold text-slate-800">Audit log</h3></div>
         <div className="overflow-x-auto max-h-80 overflow-y-auto">
           <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-white">
-              <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
-                <th className="px-6 py-3 font-semibold">When</th>
-                <th className="px-4 py-3 font-semibold">Actor</th>
-                <th className="px-4 py-3 font-semibold">Action</th>
-              </tr>
-            </thead>
+            <thead className="sticky top-0 bg-white"><tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
+              <th className="px-6 py-3 font-semibold">When</th><th className="px-4 py-3 font-semibold">Action</th>
+            </tr></thead>
             <tbody>
-              {sortedLog.map(entry => (
+              {auditLog.map(entry => (
                 <tr key={entry.id} className="border-b border-slate-50 last:border-0">
                   <td className="px-6 py-3 text-slate-500 whitespace-nowrap">{fmtDateTime(entry.ts)}</td>
-                  <td className="px-4 py-3 font-medium text-slate-700 whitespace-nowrap">{entry.actor}</td>
                   <td className="px-4 py-3 text-slate-600">{entry.action}</td>
                 </tr>
               ))}
@@ -906,32 +684,29 @@ function ManagerView({ earned, used, auditLog, onApprove, onReject }) {
 /* ---------------------------------------------------------
    Top nav
 --------------------------------------------------------- */
-function TopBar({ view, setView, employeeName, onSwitchUser }) {
+function TopBar({ view, setView, me, canManage, onSignOut }) {
   const isManager = view === "manager";
   return (
     <div className="bg-[#1E3A5F] text-white">
       <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="font-display text-lg font-bold leading-tight">Comp Time Tracker</h1>
-          <p className="text-xs text-white/60">Earned &amp; used hours</p>
+          <p className="text-xs text-white/60">{me.school}</p>
         </div>
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-3">
-            <span className={`text-sm font-medium ${!isManager ? "text-white" : "text-white/50"}`}>Employee</span>
-            <div
-              className={`switch-track ${isManager ? "is-manager" : ""}`}
-              role="switch" aria-checked={isManager} tabIndex={0}
-              onClick={() => setView(isManager ? "employee" : "manager")}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setView(isManager ? "employee" : "manager"); } }}
-            >
-              <div className="switch-thumb"></div>
+          {canManage && (
+            <div className="flex items-center gap-3">
+              <span className={`text-sm font-medium ${!isManager ? "text-white" : "text-white/50"}`}>Employee</span>
+              <div className={`switch-track ${isManager ? "is-manager" : ""}`} role="switch" aria-checked={isManager} tabIndex={0}
+                onClick={() => setView(isManager ? "employee" : "manager")}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setView(isManager ? "employee" : "manager"); } }}>
+                <div className="switch-thumb"></div>
+              </div>
+              <span className={`text-sm font-medium ${isManager ? "text-white" : "text-white/50"}`}>Manager</span>
             </div>
-            <span className={`text-sm font-medium ${isManager ? "text-white" : "text-white/50"}`}>Manager</span>
-          </div>
+          )}
           <div className="h-5 w-px bg-white/20"></div>
-          <div className="text-xs text-white/70">
-            {employeeName} · <button onClick={onSwitchUser} className="underline hover:text-white">Switch user</button>
-          </div>
+          <div className="text-xs text-white/70">{me.name} · <button onClick={onSignOut} className="underline hover:text-white">Sign out</button></div>
         </div>
       </div>
     </div>
@@ -942,76 +717,112 @@ function TopBar({ view, setView, employeeName, onSwitchUser }) {
    Root App
 --------------------------------------------------------- */
 function App() {
-  const initial = loadState();
-  const [currentUser, setCurrentUser] = useState(initial.currentUser);
-  const [earned, setEarned] = useState(initial.earned);
-  const [used, setUsed] = useState(initial.used);
-  const [auditLog, setAuditLog] = useState(initial.auditLog);
+  const [authUser, setAuthUser] = useState(undefined); // undefined = loading, null = signed out
+  const [me, setMe] = useState(null);
   const [view, setView] = useState("employee");
+  const [earned, setEarned] = useState([]);
+  const [used, setUsed] = useState([]);
+  const [managers, setManagers] = useState([]);
+  const [pendingEarned, setPendingEarned] = useState([]);
+  const [pendingUsed, setPendingUsed] = useState([]);
+  const [auditLog, setAuditLog] = useState([]);
 
+  useEffect(() => auth.onAuthStateChanged(u => setAuthUser(u)), []);
+
+  // Load / listen to my user profile doc
   useEffect(() => {
-    saveState({ earned, used, auditLog, currentUser });
-  }, [earned, used, auditLog, currentUser]);
-
-  const handleSubmitEarned = useCallback((entry) => {
-    setEarned(prev => [...prev, entry]);
-    setAuditLog(prev => [...prev, {
-      id: uid("a"), ts: entry.submittedAt, actor: entry.employeeName,
-      action: `Logged ${entry.extraHours} comp hours earned (${entry.eventReason})`,
-    }]);
-  }, []);
-
-  const handleSubmitUsed = useCallback((entry) => {
-    setUsed(prev => [...prev, entry]);
-    setAuditLog(prev => [...prev, {
-      id: uid("a"), ts: entry.submittedAt, actor: entry.employeeName,
-      action: `Requested to use ${entry.totalHours} comp hours`,
-    }]);
-  }, []);
-
-  const decide = useCallback((kind, id, newStatus) => {
-    const setter = kind === "earned" ? setEarned : setUsed;
-    setter(prevList => {
-      const target = prevList.find(r => r.id === id);
-      if (!target || target.status !== "pending") return prevList;
-      const decidedAt = new Date().toISOString();
-      const hours = kind === "earned" ? target.extraHours : target.totalHours;
-      const verb = newStatus === "approved" ? "Approved" : "Rejected";
-      const noun = kind === "earned" ? "earned comp time" : "comp time usage";
-      setAuditLog(prevLog => [...prevLog, {
-        id: uid("a"), ts: decidedAt, actor: "Admin",
-        action: `${verb} ${target.employeeName}'s ${noun} (${hours} hrs)`,
-      }]);
-      return prevList.map(r => r.id === id ? { ...r, status: newStatus, decidedAt, decidedBy: "Admin" } : r);
+    if (!authUser) { setMe(null); return; }
+    return db.collection("users").doc(authUser.uid).onSnapshot(snap => {
+      if (snap.exists) setMe({ id: authUser.uid, ...snap.data() });
     });
+  }, [authUser]);
+
+  // My earned/used requests
+  useEffect(() => {
+    if (!me) return;
+    const u1 = db.collection("earnedRequests").where("employeeId", "==", me.id)
+      .onSnapshot(s => setEarned(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+    const u2 = db.collection("usedRequests").where("employeeId", "==", me.id)
+      .onSnapshot(s => setUsed(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+    return () => { u1(); u2(); };
+  }, [me && me.id]);
+
+  // Managers for my school
+  useEffect(() => {
+    if (!me || !me.school) return;
+    return db.collection("users").where("isManagerFor", "array-contains", me.school)
+      .onSnapshot(s => setManagers(s.docs.map(d => ({ id: d.id, name: d.data().name }))));
+  }, [me && me.school]);
+
+  const canManage = me && Array.isArray(me.isManagerFor) && me.isManagerFor.length > 0;
+
+  // Pending queues for schools I manage
+  useEffect(() => {
+    if (!canManage) return;
+    const schools = me.isManagerFor.slice(0, 10); // Firestore 'in' query limit
+    const u1 = db.collection("earnedRequests").where("school", "in", schools).where("status", "==", "pending")
+      .onSnapshot(s => setPendingEarned(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+    const u2 = db.collection("usedRequests").where("school", "in", schools).where("status", "==", "pending")
+      .onSnapshot(s => setPendingUsed(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+    const u3 = db.collection("auditLog").orderBy("ts", "desc").limit(100)
+      .onSnapshot(s => setAuditLog(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+    return () => { u1(); u2(); u3(); };
+  }, [canManage, me && JSON.stringify(me.isManagerFor)]);
+
+  const handleChooseSchool = useCallback(async (school) => {
+    await db.collection("users").doc(me.id).update({ school });
+  }, [me]);
+
+  const handleSubmitEarned = useCallback(async (payload) => {
+    await db.collection("earnedRequests").add({
+      employeeId: me.id, employeeName: me.name, school: me.school,
+      status: "pending", submittedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      decidedAt: null, ...payload,
+    });
+  }, [me]);
+
+  const handleSubmitUsed = useCallback(async (payload) => {
+    await db.collection("usedRequests").add({
+      employeeId: me.id, employeeName: me.name, school: me.school,
+      status: "pending", submittedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      decidedAt: null, ...payload,
+    });
+  }, [me]);
+
+  const handleDecide = useCallback(async (kind, id, action) => {
+    const decideRequest = functions.httpsCallable("decideRequest");
+    try {
+      await decideRequest({ kind, id, action });
+    } catch (e) {
+      alert(e.message || "Something went wrong processing that decision.");
+    }
   }, []);
 
-  const handleApprove = useCallback((kind, id) => decide(kind, id, "approved"), [decide]);
-  const handleReject = useCallback((kind, id) => decide(kind, id, "rejected"), [decide]);
-
-  if (!currentUser) {
-    return <LoginScreen onLogin={(user) => setCurrentUser(user)} />;
+  if (authUser === undefined) {
+    return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;
+  }
+  if (!authUser) {
+    return <LoginScreen />;
+  }
+  if (!me) {
+    return <div className="min-h-screen flex items-center justify-center text-slate-400">Setting up your account…</div>;
+  }
+  if (!me.school) {
+    return <SchoolPicker onChoose={handleChooseSchool} />;
   }
 
   return (
     <div className="min-h-screen">
-      <TopBar view={view} setView={setView} employeeName={currentUser.name} onSwitchUser={() => setCurrentUser(null)} />
+      <TopBar view={view} setView={setView} me={me} canManage={canManage} onSignOut={() => auth.signOut()} />
       <main className="max-w-6xl mx-auto px-6 py-8">
-        {view === "employee" ? (
-          <EmployeeView
-            employeeId={currentUser.id}
-            employeeName={currentUser.name}
-            earned={earned}
-            used={used}
-            onSubmitEarned={handleSubmitEarned}
-            onSubmitUsed={handleSubmitUsed}
-          />
+        {view === "employee" || !canManage ? (
+          <EmployeeView me={me} earned={earned} used={used} managers={managers} onSubmitEarned={handleSubmitEarned} onSubmitUsed={handleSubmitUsed} />
         ) : (
-          <ManagerView earned={earned} used={used} auditLog={auditLog} onApprove={handleApprove} onReject={handleReject} />
+          <ManagerView me={me} pendingEarned={pendingEarned} pendingUsed={pendingUsed} auditLog={auditLog} onDecide={handleDecide} />
         )}
       </main>
       <footer className="max-w-6xl mx-auto px-6 pb-8 text-xs text-slate-400">
-        Data is stored locally in this browser for demo purposes — no server required.
+        Signed in as {me.email}. Data is stored in Firestore and shared across all district devices.
       </footer>
     </div>
   );

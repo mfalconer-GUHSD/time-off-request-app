@@ -1,0 +1,30 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "earnedRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "employeeId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "dateWorked", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "earnedRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "school", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "usedRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "school", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

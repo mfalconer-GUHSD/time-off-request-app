@@ -1,0 +1,104 @@
+rules_version = '2';
+
+// -----------------------------------------------------------------------
+// Comp Time Tracker — Firestore Security Rules
+//
+// Data model:
+//   users/{uid}            -> { email, name, school, isManagerFor: [schoolId,...], isSuperAdmin: bool }
+//   schools/{schoolId}      -> { name }
+//   earnedRequests/{id}     -> earned comp-time entries
+//   usedRequests/{id}       -> comp-time usage requests
+//   auditLog/{id}           -> append-only activity log
+//
+// Identity comes entirely from Firebase Auth (Google Sign-In). District
+// domain restriction is enforced twice: once client-side (UX only, not
+// trusted) and again here (the actual security boundary), plus again in
+// the onUserCreate Cloud Function which deletes any non-domain account.
+// -----------------------------------------------------------------------
+
+function isSignedIn() {
+  return request.auth != null;
+}
+
+function isDistrictAccount() {
+  return isSignedIn() && request.auth.token.email.matches('.*@guhsd[.]net$');
+}
+
+function myUserDoc() {
+  return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+}
+
+function isSuperAdmin() {
+  return isDistrictAccount() && myUserDoc().isSuperAdmin == true;
+}
+
+function isManagerFor(schoolId) {
+  return isDistrictAccount() && schoolId in myUserDoc().isManagerFor;
+}
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Each person can read/update their own profile (but not grant
+    // themselves manager/superadmin rights — only a superadmin can do that).
+    match /users/{uid} {
+      allow read: if isDistrictAccount() && (request.auth.uid == uid || isSuperAdmin());
+      allow create: if isDistrictAccount() && request.auth.uid == uid;
+      allow update: if isDistrictAccount() && (
+        (request.auth.uid == uid &&
+          request.resource.data.isManagerFor == resource.data.isManagerFor &&
+          request.resource.data.isSuperAdmin == resource.data.isSuperAdmin)
+        || isSuperAdmin()
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // Read-only list of GUHSD schools, maintained by a superadmin.
+    match /schools/{schoolId} {
+      allow read: if isDistrictAccount();
+      allow write: if isSuperAdmin();
+    }
+
+    // Earned comp-time entries.
+    match /earnedRequests/{id} {
+      allow read: if isDistrictAccount() && (
+        resource.data.employeeId == request.auth.uid ||
+        isManagerFor(resource.data.school) ||
+        isSuperAdmin()
+      );
+      // Employees create their own; server-computed fields (comp hours,
+      // remaining hours, expiration) are filled in by the Cloud Function,
+      // not trusted from the client.
+      allow create: if isDistrictAccount() &&
+        request.resource.data.employeeId == request.auth.uid &&
+        request.resource.data.status == 'pending';
+      // Only an assigned manager (or superadmin) can approve/reject;
+      // employees cannot edit their own submission once created.
+      allow update: if isDistrictAccount() &&
+        (isManagerFor(resource.data.school) || isSuperAdmin());
+      allow delete: if isSuperAdmin();
+    }
+
+    // Comp-time usage requests.
+    match /usedRequests/{id} {
+      allow read: if isDistrictAccount() && (
+        resource.data.employeeId == request.auth.uid ||
+        isManagerFor(resource.data.school) ||
+        isSuperAdmin()
+      );
+      allow create: if isDistrictAccount() &&
+        request.resource.data.employeeId == request.auth.uid &&
+        request.resource.data.status == 'pending';
+      allow update: if isDistrictAccount() &&
+        (isManagerFor(resource.data.school) || isSuperAdmin());
+      allow delete: if isSuperAdmin();
+    }
+
+    // Append-only audit trail. Nobody edits or deletes history.
+    match /auditLog/{id} {
+      allow read: if isDistrictAccount();
+      allow create: if isDistrictAccount();
+      allow update, delete: if false;
+    }
+  }
+}
