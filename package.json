@@ -1,0 +1,10 @@
+{
+  "name": "comp-time-tracker-admin-scripts",
+  "private": true,
+  "scripts": {
+    "make-superadmin": "node scripts/make-superadmin.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.1.0"
+  }
+}
