@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Time-Off Requests | Staff Leave Portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+<style>
+  html, body, #root { height: 100%; }
+  body { font-family: 'Inter', sans-serif; background: #F5F6F8; }
+  .font-display { font-family: 'Libre Franklin', sans-serif; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #C7CCD6; border-radius: 4px; }
+
+  .switch-track {
+    width: 64px; height: 32px; border-radius: 9999px;
+    background: #1E3A5F; position: relative; cursor: pointer;
+    transition: background .25s ease; flex-shrink: 0;
+  }
+  .switch-track.is-manager { background: #0F766E; }
+  .switch-thumb {
+    position: absolute; top: 3px; left: 3px;
+    width: 26px; height: 26px; border-radius: 9999px; background: white;
+    box-shadow: 0 1px 3px rgba(0,0,0,.3);
+    transition: transform .25s ease;
+  }
+  .switch-track.is-manager .switch-thumb { transform: translateX(32px); }
+
+  .badge { display:inline-flex; align-items:center; gap:6px; padding:2px 10px; border-radius:9999px; font-size:12px; font-weight:600; }
+  .badge-pending { background:#FEF3C7; color:#92400E; }
+  .badge-approved { background:#D1FAE5; color:#065F46; }
+  .badge-rejected { background:#FEE2E2; color:#991B1B; }
+
+  .fade-in { animation: fadeIn .25s ease both; }
+  @keyframes fadeIn { from { opacity:0; transform: translateY(4px);} to { opacity:1; transform:none; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .switch-thumb, .switch-track, .fade-in { transition: none !important; animation: none !important; }
+  }
+
+  input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
+    outline: 2px solid #1E3A5F; outline-offset: 2px;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+/* ---------------------------------------------------------
+   Constants & seed data
+--------------------------------------------------------- */
+const STORAGE_KEY = "timeoff_portal_v1";
+const TODAY = new Date();
+const isoToday = TODAY.toISOString().slice(0,10);
+
+const seedEmployees = [
+  { id: "e1", name: "Jamie Rivera", title: "English Dept. Lead", vacationBalance: 12, sickBalance: 8 },
+  { id: "e2", name: "Marcus Bell",  title: "Math Teacher",        vacationBalance: 6,  sickBalance: 5 },
+  { id: "e3", name: "Priya Nair",   title: "Counselor",           vacationBalance: 15, sickBalance: 10 },
+  { id: "e4", name: "Dana Wu",      title: "Classified Staff — Front Office", vacationBalance: 9, sickBalance: 6 },
+];
+
+const seedRequests = [
+  { id: "r1", employeeId: "e2", type: "sick", startDate: "2026-07-10", endDate: "2026-07-10", days: 1, reason: "Doctor's appointment", status: "approved", submittedAt: "2026-07-08T14:20:00Z", decidedAt: "2026-07-08T18:00:00Z", decidedBy: "Admin" },
+  { id: "r2", employeeId: "e3", type: "vacation", startDate: "2026-08-03", endDate: "2026-08-05", days: 3, reason: "Family trip", status: "pending", submittedAt: "2026-07-15T12:00:00Z", decidedAt: null, decidedBy: null },
+  { id: "r3", employeeId: "e4", type: "vacation", startDate: "2026-07-25", endDate: "2026-07-25", days: 1, reason: "Personal", status: "rejected", submittedAt: "2026-07-12T09:30:00Z", decidedAt: "2026-07-12T16:45:00Z", decidedBy: "Admin" },
+];
+
+const seedAuditLog = [
+  { id: "a1", ts: "2026-07-08T14:20:00Z", actor: "Marcus Bell", action: "Submitted sick request (1 day)" },
+  { id: "a2", ts: "2026-07-08T18:00:00Z", actor: "Admin", action: "Approved Marcus Bell's sick request (1 day)" },
+  { id: "a3", ts: "2026-07-12T09:30:00Z", actor: "Dana Wu", action: "Submitted vacation request (1 day)" },
+  { id: "a4", ts: "2026-07-12T16:45:00Z", actor: "Admin", action: "Rejected Dana Wu's vacation request (1 day)" },
+  { id: "a5", ts: "2026-07-15T12:00:00Z", actor: "Priya Nair", action: "Submitted vacation request (3 days)" },
+];
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) { /* fall through to seed */ }
+  return { employees: seedEmployees, requests: seedRequests, auditLog: seedAuditLog };
+}
+
+function saveState(state) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+  catch (e) { /* storage unavailable — app still works in-memory */ }
+}
+
+/* ---------------------------------------------------------
+   Helpers
+--------------------------------------------------------- */
+function daysBetweenInclusive(startISO, endISO) {
+  const start = new Date(startISO + "T00:00:00");
+  const end = new Date(endISO + "T00:00:00");
+  const diff = Math.round((end - start) / 86400000) + 1;
+  return diff;
+}
+
+function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function fmtDateTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function uid(prefix) {
+  return prefix + "_" + Math.random().toString(36).slice(2, 9);
+}
+
+/* ---------------------------------------------------------
+   Shared UI bits
+--------------------------------------------------------- */
+function StatusBadge({ status }) {
+  const map = {
+    pending:  { cls: "badge-pending",  label: "Pending",  dot: "#92400E" },
+    approved: { cls: "badge-approved", label: "Approved", dot: "#065F46" },
+    rejected: { cls: "badge-rejected", label: "Rejected", dot: "#991B1B" },
+  };
+  const m = map[status] || map.pending;
+  return (
+    <span className={`badge ${m.cls}`}>
+      <span style={{width:6,height:6,borderRadius:9999, background:m.dot}}></span>
+      {m.label}
+    </span>
+  );
+}
+
+function TypeTag({ type }) {
+  const isVac = type === "vacation";
+  return (
+    <span className={`text-xs font-semibold px-2 py-0.5 rounded ${isVac ? "bg-indigo-50 text-indigo-700" : "bg-orange-50 text-orange-700"}`}>
+      {isVac ? "Vacation" : "Sick"}
+    </span>
+  );
+}
+
+function BalanceCard({ label, value, unit, accent }) {
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-5 flex-1 min-w-[160px]">
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="font-display text-3xl font-bold mt-1" style={{color: accent}}>{value}</p>
+      <p className="text-xs text-slate-400 mt-0.5">{unit}</p>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Employee View
+--------------------------------------------------------- */
+function EmployeeView({ employee, requests, onSubmitRequest, formError, setFormError }) {
+  const [type, setType] = useState("vacation");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [reason, setReason] = useState("");
+
+  const myRequests = useMemo(
+    () => requests.filter(r => r.employeeId === employee.id)
+                  .sort((a,b) => new Date(b.submittedAt) - new Date(a.submittedAt)),
+    [requests, employee.id]
+  );
+
+  const availableBalance = type === "vacation" ? employee.vacationBalance : employee.sickBalance;
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    setFormError("");
+
+    if (!startDate || !endDate) {
+      setFormError("Please choose both a start and end date.");
+      return;
+    }
+    if (new Date(endDate) <= new Date(startDate)) {
+      setFormError("End date must be after the start date.");
+      return;
+    }
+
+    const requestedDays = daysBetweenInclusive(startDate, endDate);
+
+    if (requestedDays <= 0) {
+      setFormError("Please select a valid date range.");
+      return;
+    }
+    if (requestedDays > availableBalance) {
+      setFormError(`You only have ${availableBalance} ${type} day${availableBalance === 1 ? "" : "s"} available.`);
+      return;
+    }
+
+    onSubmitRequest({
+      id: uid("r"),
+      employeeId: employee.id,
+      type,
+      startDate,
+      endDate,
+      days: requestedDays,
+      reason: reason.trim() || "—",
+      status: "pending",
+      submittedAt: new Date().toISOString(),
+      decidedAt: null,
+      decidedBy: null,
+    });
+
+    setStartDate(""); setEndDate(""); setReason("");
+  }
+
+  return (
+    <div className="fade-in space-y-6">
+      <div>
+        <h2 className="font-display text-2xl font-bold text-slate-800">Welcome back, {employee.name.split(" ")[0]}</h2>
+        <p className="text-sm text-slate-500">{employee.title}</p>
+      </div>
+
+      {/* Balances */}
+      <div className="flex flex-wrap gap-4">
+        <BalanceCard label="Vacation balance" value={employee.vacationBalance} unit="days remaining" accent="#1E3A5F" />
+        <BalanceCard label="Sick balance" value={employee.sickBalance} unit="days remaining" accent="#0F766E" />
+        <BalanceCard label="Pending requests" value={myRequests.filter(r => r.status === "pending").length} unit="awaiting decision" accent="#92400E" />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+        {/* Request form */}
+        <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 p-6 h-fit">
+          <h3 className="font-display font-bold text-slate-800 mb-4">Request time off</h3>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Leave type</label>
+              <select
+                value={type}
+                onChange={e => { setType(e.target.value); setFormError(""); }}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
+              >
+                <option value="vacation">Vacation ({employee.vacationBalance} days available)</option>
+                <option value="sick">Sick ({employee.sickBalance} days available)</option>
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Start date</label>
+                <input
+                  type="date" value={startDate} min={isoToday}
+                  onChange={e => setStartDate(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">End date</label>
+                <input
+                  type="date" value={endDate} min={startDate || isoToday}
+                  onChange={e => setEndDate(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  required
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Reason (optional)</label>
+              <textarea
+                value={reason} onChange={e => setReason(e.target.value)}
+                rows={2} placeholder="e.g. Family event"
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm resize-none"
+              />
+            </div>
+
+            {formError && (
+              <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{formError}</p>
+            )}
+
+            <button
+              type="submit"
+              className="w-full bg-[#1E3A5F] hover:bg-[#16304f] text-white font-semibold text-sm rounded-lg py-2.5 transition-colors"
+            >
+              Submit request
+            </button>
+          </form>
+        </div>
+
+        {/* History */}
+        <div className="lg:col-span-3 bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-100">
+            <h3 className="font-display font-bold text-slate-800">Your request history</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
+                  <th className="px-6 py-3 font-semibold">Type</th>
+                  <th className="px-4 py-3 font-semibold">Dates</th>
+                  <th className="px-4 py-3 font-semibold">Days</th>
+                  <th className="px-4 py-3 font-semibold">Reason</th>
+                  <th className="px-6 py-3 font-semibold">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {myRequests.length === 0 && (
+                  <tr><td colSpan={5} className="px-6 py-8 text-center text-slate-400">No requests yet. Submit one to get started.</td></tr>
+                )}
+                {myRequests.map(r => (
+                  <tr key={r.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
+                    <td className="px-6 py-3"><TypeTag type={r.type} /></td>
+                    <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{fmtDate(r.startDate)} – {fmtDate(r.endDate)}</td>
+                    <td className="px-4 py-3 text-slate-700">{r.days}</td>
+                    <td className="px-4 py-3 text-slate-500 max-w-[180px] truncate" title={r.reason}>{r.reason}</td>
+                    <td className="px-6 py-3"><StatusBadge status={r.status} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Manager View
+--------------------------------------------------------- */
+function ManagerView({ employees, requests, auditLog, onApprove, onReject }) {
+  const employeeById = useMemo(() => {
+    const map = {};
+    employees.forEach(e => map[e.id] = e);
+    return map;
+  }, [employees]);
+
+  const pending = useMemo(
+    () => requests.filter(r => r.status === "pending")
+                  .sort((a,b) => new Date(a.submittedAt) - new Date(b.submittedAt)),
+    [requests]
+  );
+
+  const sortedLog = useMemo(
+    () => [...auditLog].sort((a,b) => new Date(b.ts) - new Date(a.ts)),
+    [auditLog]
+  );
+
+  return (
+    <div className="fade-in space-y-6">
+      <div>
+        <h2 className="font-display text-2xl font-bold text-slate-800">Manager dashboard</h2>
+        <p className="text-sm text-slate-500">Review pending requests and monitor team activity.</p>
+      </div>
+
+      <div className="flex flex-wrap gap-4">
+        <BalanceCard label="Pending approvals" value={pending.length} unit="need your decision" accent="#92400E" />
+        <BalanceCard label="Team members" value={employees.length} unit="tracked" accent="#1E3A5F" />
+        <BalanceCard label="Approved this log" value={requests.filter(r=>r.status==="approved").length} unit="requests" accent="#0F766E" />
+      </div>
+
+      {/* Pending approvals queue */}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100">
+          <h3 className="font-display font-bold text-slate-800">Pending approvals</h3>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
+                <th className="px-6 py-3 font-semibold">Employee</th>
+                <th className="px-4 py-3 font-semibold">Type</th>
+                <th className="px-4 py-3 font-semibold">Dates</th>
+                <th className="px-4 py-3 font-semibold">Days</th>
+                <th className="px-4 py-3 font-semibold">Reason</th>
+                <th className="px-6 py-3 font-semibold text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pending.length === 0 && (
+                <tr><td colSpan={6} className="px-6 py-8 text-center text-slate-400">No pending requests. You're all caught up.</td></tr>
+              )}
+              {pending.map(r => {
+                const emp = employeeById[r.employeeId];
+                return (
+                  <tr key={r.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
+                    <td className="px-6 py-3">
+                      <p className="font-medium text-slate-800">{emp ? emp.name : "Unknown"}</p>
+                      <p className="text-xs text-slate-400">{emp ? emp.title : ""}</p>
+                    </td>
+                    <td className="px-4 py-3"><TypeTag type={r.type} /></td>
+                    <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{fmtDate(r.startDate)} – {fmtDate(r.endDate)}</td>
+                    <td className="px-4 py-3 text-slate-700">{r.days}</td>
+                    <td className="px-4 py-3 text-slate-500 max-w-[160px] truncate" title={r.reason}>{r.reason}</td>
+                    <td className="px-6 py-3">
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          onClick={() => onReject(r.id)}
+                          className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-rose-200 text-rose-700 hover:bg-rose-50 transition-colors"
+                        >
+                          Reject
+                        </button>
+                        <button
+                          onClick={() => onApprove(r.id)}
+                          className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#0F766E] text-white hover:bg-[#0c5f58] transition-colors"
+                        >
+                          Approve
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Team balances */}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100">
+          <h3 className="font-display font-bold text-slate-800">Team balances</h3>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
+                <th className="px-6 py-3 font-semibold">Employee</th>
+                <th className="px-4 py-3 font-semibold">Role</th>
+                <th className="px-4 py-3 font-semibold">Vacation left</th>
+                <th className="px-4 py-3 font-semibold">Sick left</th>
+              </tr>
+            </thead>
+            <tbody>
+              {employees.map(emp => (
+                <tr key={emp.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
+                  <td className="px-6 py-3 font-medium text-slate-800">{emp.name}</td>
+                  <td className="px-4 py-3 text-slate-500">{emp.title}</td>
+                  <td className="px-4 py-3 text-slate-700">{emp.vacationBalance}</td>
+                  <td className="px-4 py-3 text-slate-700">{emp.sickBalance}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Audit log */}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100">
+          <h3 className="font-display font-bold text-slate-800">Team-wide audit log</h3>
+        </div>
+        <div className="overflow-x-auto max-h-80 overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-white">
+              <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
+                <th className="px-6 py-3 font-semibold">When</th>
+                <th className="px-4 py-3 font-semibold">Actor</th>
+                <th className="px-4 py-3 font-semibold">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedLog.map(entry => (
+                <tr key={entry.id} className="border-b border-slate-50 last:border-0">
+                  <td className="px-6 py-3 text-slate-500 whitespace-nowrap">{fmtDateTime(entry.ts)}</td>
+                  <td className="px-4 py-3 font-medium text-slate-700 whitespace-nowrap">{entry.actor}</td>
+                  <td className="px-4 py-3 text-slate-600">{entry.action}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Top nav with toggle
+--------------------------------------------------------- */
+function TopBar({ view, setView, employee }) {
+  const isManager = view === "manager";
+  return (
+    <div className="bg-[#1E3A5F] text-white">
+      <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div>
+          <h1 className="font-display text-lg font-bold leading-tight">Staff Leave Portal</h1>
+          <p className="text-xs text-white/60">Time-off requests &amp; approvals</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className={`text-sm font-medium ${!isManager ? "text-white" : "text-white/50"}`}>Employee</span>
+          <div
+            className={`switch-track ${isManager ? "is-manager" : ""}`}
+            role="switch"
+            aria-checked={isManager}
+            tabIndex={0}
+            onClick={() => setView(isManager ? "employee" : "manager")}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setView(isManager ? "employee" : "manager"); } }}
+          >
+            <div className="switch-thumb"></div>
+          </div>
+          <span className={`text-sm font-medium ${isManager ? "text-white" : "text-white/50"}`}>Manager</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   Root App
+--------------------------------------------------------- */
+function App() {
+  const initial = loadState();
+  const [employees, setEmployees] = useState(initial.employees);
+  const [requests, setRequests] = useState(initial.requests);
+  const [auditLog, setAuditLog] = useState(initial.auditLog);
+  const [view, setView] = useState("employee");
+  const [formError, setFormError] = useState("");
+
+  // The employee currently "logged in" to the Employee View.
+  const currentEmployee = employees[0];
+
+  useEffect(() => {
+    saveState({ employees, requests, auditLog });
+  }, [employees, requests, auditLog]);
+
+  const handleSubmitRequest = useCallback((req) => {
+    setRequests(prev => [...prev, req]);
+    setAuditLog(prev => [...prev, {
+      id: uid("a"),
+      ts: req.submittedAt,
+      actor: currentEmployee.name,
+      action: `Submitted ${req.type} request (${req.days} day${req.days === 1 ? "" : "s"})`,
+    }]);
+  }, [currentEmployee]);
+
+  const decide = useCallback((requestId, newStatus) => {
+    setRequests(prevRequests => {
+      const target = prevRequests.find(r => r.id === requestId);
+      if (!target || target.status !== "pending") return prevRequests;
+
+      const decidedAt = new Date().toISOString();
+
+      if (newStatus === "approved") {
+        setEmployees(prevEmployees => prevEmployees.map(emp => {
+          if (emp.id !== target.employeeId) return emp;
+          const field = target.type === "vacation" ? "vacationBalance" : "sickBalance";
+          return { ...emp, [field]: Math.max(0, emp[field] - target.days) };
+        }));
+      }
+
+      setEmployees(prevEmployees => {
+        const emp = prevEmployees.find(e => e.id === target.employeeId);
+        const empName = emp ? emp.name : "an employee";
+        setAuditLog(prevLog => [...prevLog, {
+          id: uid("a"),
+          ts: decidedAt,
+          actor: "Admin",
+          action: `${newStatus === "approved" ? "Approved" : "Rejected"} ${empName}'s ${target.type} request (${target.days} day${target.days === 1 ? "" : "s"})`,
+        }]);
+        return prevEmployees;
+      });
+
+      return prevRequests.map(r => r.id === requestId
+        ? { ...r, status: newStatus, decidedAt, decidedBy: "Admin" }
+        : r
+      );
+    });
+  }, []);
+
+  const handleApprove = useCallback((id) => decide(id, "approved"), [decide]);
+  const handleReject = useCallback((id) => decide(id, "rejected"), [decide]);
+
+  return (
+    <div className="min-h-screen">
+      <TopBar view={view} setView={setView} employee={currentEmployee} />
+      <main className="max-w-6xl mx-auto px-6 py-8">
+        {view === "employee" ? (
+          <EmployeeView
+            employee={currentEmployee}
+            requests={requests}
+            onSubmitRequest={handleSubmitRequest}
+            formError={formError}
+            setFormError={setFormError}
+          />
+        ) : (
+          <ManagerView
+            employees={employees}
+            requests={requests}
+            auditLog={auditLog}
+            onApprove={handleApprove}
+            onReject={handleReject}
+          />
+        )}
+      </main>
+      <footer className="max-w-6xl mx-auto px-6 pb-8 text-xs text-slate-400">
+        Data is stored locally in this browser for demo purposes — no server required.
+      </footer>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
