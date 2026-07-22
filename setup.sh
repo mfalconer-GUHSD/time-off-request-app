@@ -50,6 +50,7 @@ firebase projects:create "$PROJECT_ID" --display-name "$DISPLAY_NAME"
 node -e "
 const fs = require('fs');
 const rc = JSON.parse(fs.readFileSync('.firebaserc', 'utf8'));
+rc.projects = rc.projects || {};
 rc.projects.default = '$PROJECT_ID';
 fs.writeFileSync('.firebaserc', JSON.stringify(rc, null, 2) + '\n');
 "
