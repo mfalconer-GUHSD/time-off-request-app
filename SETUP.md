@@ -13,8 +13,8 @@ steps.
 - [ ] Enable Google as a sign-in provider (one toggle, ~10 seconds)
 - [ ] Sign into the app once, then run the superadmin bootstrap script
 - [ ] Create a service account key for GitHub Actions
-- [ ] Set 6 GitHub repo secrets (notifications)
-- [ ] Set up Google Drive backups (2 more secrets)
+- [ ] Set 5 GitHub repo secrets (notifications)
+- [ ] Set up backups to a private GitHub repo (2 more secrets)
 - [ ] Verify the school list against HR/IT
 - [ ] Work through the pre-launch test checklist
 
@@ -95,14 +95,14 @@ gcloud iam service-accounts keys create service-account.json \
 
 Either way: open `service-account.json`, copy its *entire contents*, and
 **delete the local file once it's in GitHub Secrets** (below) — don't
-leave it sitting on disk or commit it anywhere. You'll reuse this same
-service account for backups in step 6, so keep the JSON handy for a
-minute before deleting it.
+leave it sitting on disk or commit it anywhere. This same service account
+is reused for backups in step 6 (Firestore read access only — no Drive
+permissions needed).
 
 ### Add the GitHub repo secrets
 
 In the repo: **Settings → Secrets and variables → Actions → New repository
-secret.** Add all six:
+secret.** Add all five:
 
 | Secret name | Value |
 |---|---|
@@ -136,7 +136,7 @@ re-enable the workflow manually under the Actions tab.
 The `SCHOOLS` array in `index.html` was compiled from GUHSD's public
 website. Confirm it against HR/IT's authoritative list before go-live.
 
-## 6. Set up weekly backups to Google Drive
+## 6. Set up weekly backups to a private GitHub repo
 
 Firestore itself is already replicated by Google across multiple data
 centers — that baseline durability needs no setup. This backup is for a
@@ -144,54 +144,51 @@ different risk: protecting against a bad bulk edit, accidental deletion,
 or other human error, by keeping point-in-time JSON snapshots you can
 recover from.
 
-**This deliberately does not go into this GitHub repo or any public
-location** — it contains real employee names, emails, and comp-time
-details, so it goes to a **private Google Drive folder only you (and
-whoever else you choose) can see.**
+**Google Drive was tried first and doesn't work for this** — Google
+service accounts have zero Drive storage quota of their own, and cannot
+create files even in a folder explicitly shared with them. That's a hard
+platform limitation, not a misconfiguration, so backups instead go to a
+**separate, private GitHub repository** dedicated to nothing but backups
+(`guhsd-comp-time-backups`, already created and private — never the
+public app-code repo, since this contains real employee data).
 
 ### One-time setup
 
-1. **Enable the Google Drive API** for your Firebase project: go to
-   https://console.cloud.google.com/apis/library/drive.googleapis.com
-   (make sure the project selector at the top shows your project), and
-   click **Enable**. This is free — no billing account needed.
+1. **Create a Personal Access Token** scoped to just the backup repo:
+   - Go to https://github.com/settings/personal-access-tokens/new
+   - Under **Repository access**, choose **Only select repositories** →
+     select `guhsd-comp-time-backups`
+   - Under **Permissions → Repository permissions**, set **Contents** to
+     **Read and write**
+   - Set an expiration (e.g. 1 year — you'll need to regenerate and
+     update the secret when it expires)
+   - **Generate token** and copy it immediately (shown once)
 
-2. **Create (or choose) a Google Drive folder** to hold backups — e.g.
-   "Comp Time Tracker Backups." Open it in Drive and copy its **folder
-   ID** from the URL: `https://drive.google.com/drive/folders/`**`THIS_PART`**
-
-3. **Share that folder with the service account.** In Drive, right-click
-   the folder → **Share** → enter the service account's email (it looks
-   like `comp-time-notifier@YOUR_PROJECT_ID.iam.gserviceaccount.com` —
-   you can find the exact address in Cloud Console → IAM & Admin →
-   Service Accounts) → give it **Editor** access → Share. This is the
-   *only* thing in your entire Drive this service account can ever touch.
-
-4. **Add one more GitHub repo secret:**
+2. **Add two GitHub repo secrets** (on the main `guhsd-comp-time-tracker`
+   repo, same place as the others):
 
 | Secret name | Value |
 |---|---|
-| `DRIVE_BACKUP_FOLDER_ID` | The folder ID from step 2 |
-
-(`FIREBASE_SERVICE_ACCOUNT` is already set from step 4 above — the same
-service account is reused here, now with Drive access added via sharing.)
+| `BACKUP_REPO_TOKEN` | The token from step 1 |
+| `BACKUP_REPO` | `mfalconer-GUHSD/guhsd-comp-time-backups` |
 
 ### Verify it's working
 
-**Actions** tab → **Firestore Backup to Google Drive** → **Run workflow**
-to trigger it manually. Check your Drive folder afterward for a file like
+**Actions** tab → **Firestore Backup to Private GitHub Repo** → **Run
+workflow** to trigger it manually. Check the `guhsd-comp-time-backups`
+repo afterward for a new file under `backups/` like
 `comp-time-backup-2026-07-22T...json`.
 
 The workflow keeps the 20 most recent backups and automatically deletes
-older ones, so the folder won't grow indefinitely.
+older ones, so the repo won't grow indefinitely.
 
 ### To restore from a backup
 
 There's no automated restore (deliberately — a bad restore could do more
 damage than the problem it's fixing). If you ever need to recover data,
-download the relevant backup JSON from Drive and manually re-create the
-affected documents in the Firestore console, or ask for help scripting a
-one-time targeted restore for the specific situation.
+download the relevant backup JSON from the backup repo and manually
+re-create the affected documents in the Firestore console, or ask for
+help scripting a one-time targeted restore for the specific situation.
 
 ## 7. What to test before rolling out to real staff
 
@@ -222,7 +219,7 @@ one-time targeted restore for the specific situation.
 - [ ] Manually trigger the GitHub Actions notifications workflow and
       confirm you receive a "new request" email.
 - [ ] Manually trigger the backup workflow and confirm a file appears in
-      your Drive folder.
+      the private backup repo.
 
 ## Known tradeoffs of this no-billing-account architecture
 
@@ -236,3 +233,6 @@ one-time targeted restore for the specific situation.
 - **Backups are point-in-time snapshots, not continuous replication** —
   weekly means you could lose up to a week of changes in the worst case.
   Trigger the workflow manually before any risky bulk operation.
+- **The backup PAT expires** on whatever schedule you set (default
+  suggestion: 1 year) — mark a reminder to regenerate it, or backups will
+  silently stop working until it's renewed.
