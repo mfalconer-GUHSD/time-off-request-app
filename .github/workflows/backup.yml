@@ -1,9 +1,15 @@
-name: Firestore Backup to Google Drive
+name: Firestore Backup to Private GitHub Repo
 
-# Weekly export of all Firestore data to a JSON snapshot in a private
-# Google Drive folder — protects against accidental data loss/corruption.
-# Firestore itself is already replicated by Google across data centers;
-# this is specifically for human-error scenarios (bad bulk edit, etc).
+# Weekly export of all Firestore data to a JSON snapshot, committed into a
+# separate PRIVATE repository dedicated to backups. Protects against
+# accidental data loss/corruption (bad bulk edit, etc) — Firestore itself
+# is already replicated by Google across data centers, so this is
+# specifically for human-error scenarios, not infrastructure failure.
+#
+# Google Drive was tried first, but Google service accounts have zero
+# Drive storage quota of their own and cannot create files even in a
+# folder explicitly shared with them (a hard platform limitation). A
+# private GitHub repo sidesteps this entirely.
 #
 # NOTE: GitHub disables scheduled workflows automatically after 60 days
 # of repository inactivity. If backups silently stop, push any commit
@@ -25,10 +31,11 @@ jobs:
           node-version: "20"
 
       - name: Install dependencies
-        run: npm install firebase-admin googleapis
+        run: npm install firebase-admin
 
       - name: Run backup
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          DRIVE_BACKUP_FOLDER_ID: ${{ secrets.DRIVE_BACKUP_FOLDER_ID }}
+          BACKUP_REPO_TOKEN: ${{ secrets.BACKUP_REPO_TOKEN }}
+          BACKUP_REPO: ${{ secrets.BACKUP_REPO }}
         run: node scripts/backup-firestore.js
