@@ -451,7 +451,7 @@ function EmployeeView({ me, earned, used, managers, onSubmitEarned, onSubmitUsed
               <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
                 <th className="px-6 py-3 font-semibold">Date worked</th>
                 <th className="px-4 py-3 font-semibold">Event</th>
-                <th className="px-4 py-3 font-semibold">Hours remaining</th>
+                <th className="px-4 py-3 font-semibold">Hours Earned</th>
                 <th className="px-6 py-3 font-semibold">How calculated</th>
               </tr>
             </thead>
@@ -668,20 +668,21 @@ function ManagerView({ me, pendingEarned, pendingUsed, auditLog, onDecide, allEa
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
-              <th className="px-6 py-3 font-semibold">Employee</th><th className="px-4 py-3 font-semibold">School</th>
-              <th className="px-4 py-3 font-semibold">Date</th><th className="px-4 py-3 font-semibold">Reason</th>
-              <th className="px-4 py-3 font-semibold">Worked</th><th className="px-4 py-3 font-semibold">Comp hours</th><th className="px-6 py-3 font-semibold text-right">Action</th>
+              <th className="px-6 py-3 font-semibold">Employee</th>
+              <th className="px-4 py-3 font-semibold">Date</th><th className="px-4 py-3 font-semibold">Time</th>
+              <th className="px-4 py-3 font-semibold">Hours</th><th className="px-4 py-3 font-semibold">Reason</th>
+              <th className="px-4 py-3 font-semibold">Approved By</th><th className="px-6 py-3 font-semibold text-right">Action</th>
             </tr></thead>
             <tbody>
               {pendingEarned.length === 0 && <tr><td colSpan={7} className="px-6 py-8 text-center text-slate-400">Nothing pending.</td></tr>}
               {pendingEarned.map(r => (
                 <tr key={r.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
                   <td className="px-6 py-3 font-medium text-slate-800">{r.employeeName}</td>
-                  <td className="px-4 py-3 text-slate-500">{r.school}</td>
                   <td className="px-4 py-3 whitespace-nowrap">{fmtDate(r.dateWorked)}</td>
-                  <td className="px-4 py-3 text-slate-500 max-w-[160px] truncate">{r.eventReason}</td>
                   <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{r.extraHours != null ? `${r.regularHours} reg + ${r.extraHours} extra` : "—"}</td>
                   <td className="px-4 py-3 font-semibold">{r.compHoursRounded ?? r.extraHours}</td>
+                  <td className="px-4 py-3 text-slate-500 max-w-[160px] truncate">{r.eventReason}</td>
+                  <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{r.decidedByName || "—"}</td>
                   <td className="px-6 py-3">
                     <div className="flex gap-2 justify-end">
                       <button onClick={() => onDecide("earned", r.id, "reject")} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-rose-200 text-rose-700 hover:bg-rose-50">Reject</button>
@@ -700,19 +701,21 @@ function ManagerView({ me, pendingEarned, pendingUsed, auditLog, onDecide, allEa
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
-              <th className="px-6 py-3 font-semibold">Employee</th><th className="px-4 py-3 font-semibold">School</th>
-              <th className="px-4 py-3 font-semibold">Date</th><th className="px-4 py-3 font-semibold">Time</th><th className="px-4 py-3 font-semibold">Hours</th>
-              <th className="px-6 py-3 font-semibold text-right">Action</th>
+              <th className="px-6 py-3 font-semibold">Employee</th>
+              <th className="px-4 py-3 font-semibold">Date</th><th className="px-4 py-3 font-semibold">Time</th>
+              <th className="px-4 py-3 font-semibold">Hours</th><th className="px-4 py-3 font-semibold">Reason</th>
+              <th className="px-4 py-3 font-semibold">Approved By</th><th className="px-6 py-3 font-semibold text-right">Action</th>
             </tr></thead>
             <tbody>
-              {pendingUsed.length === 0 && <tr><td colSpan={6} className="px-6 py-8 text-center text-slate-400">Nothing pending.</td></tr>}
+              {pendingUsed.length === 0 && <tr><td colSpan={7} className="px-6 py-8 text-center text-slate-400">Nothing pending.</td></tr>}
               {pendingUsed.map(r => (
                 <tr key={r.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
                   <td className="px-6 py-3 font-medium text-slate-800">{r.employeeName}</td>
-                  <td className="px-4 py-3 text-slate-500">{r.school}</td>
                   <td className="px-4 py-3 whitespace-nowrap">{fmtDate(r.dateOfLeave)}</td>
                   <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{fmtTime(r.startTime)}–{fmtTime(r.endTime)}</td>
                   <td className="px-4 py-3">{r.totalHours}</td>
+                  <td className="px-4 py-3 text-slate-500 max-w-[160px] truncate">{r.reason}</td>
+                  <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{r.decidedByName || "—"}</td>
                   <td className="px-6 py-3">
                     <div className="flex gap-2 justify-end">
                       <button onClick={() => onDecide("used", r.id, "reject")} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-rose-200 text-rose-700 hover:bg-rose-50">Reject</button>
@@ -885,16 +888,16 @@ function AllRequestsPanel({ allEarned, allUsed, managers, onApplyEdit, onVoidEar
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
-              <th className="px-6 py-3 font-semibold">Employee</th><th className="px-4 py-3 font-semibold">Date</th>
-              <th className="px-4 py-3 font-semibold">Reason</th><th className="px-4 py-3 font-semibold">Admin</th>
-              <th className="px-4 py-3 font-semibold">Worked</th>
-              <th className="px-4 py-3 font-semibold">Comp hours</th><th className="px-4 py-3 font-semibold">Status</th>
-              <th className="px-4 py-3 font-semibold">Decided by</th>
+              <th className="px-6 py-3 font-semibold">Employee</th>
+              <th className="px-4 py-3 font-semibold">Date</th><th className="px-4 py-3 font-semibold">Time</th>
+              <th className="px-4 py-3 font-semibold">Hours</th><th className="px-4 py-3 font-semibold">Reason</th>
+              <th className="px-4 py-3 font-semibold">Status</th>
+              <th className="px-4 py-3 font-semibold">Approved By</th>
               <th className="px-6 py-3 font-semibold text-right">Action</th>
             </tr>
           </thead>
           <tbody>
-            {filteredEarned.length === 0 && <tr><td colSpan={9} className="px-6 py-8 text-center text-slate-400">No matching requests.</td></tr>}
+            {filteredEarned.length === 0 && <tr><td colSpan={8} className="px-6 py-8 text-center text-slate-400">No matching requests.</td></tr>}
             {filteredEarned.map(r => (
               <EditableEarnedRow key={r.id} row={r} managers={managers} onApplyEdit={onApplyEdit} onVoidEarned={onVoidEarned} />
             ))}
@@ -917,9 +920,11 @@ function AllRequestsPanel({ allEarned, allUsed, managers, onApplyEdit, onVoidEar
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100">
-              <th className="px-6 py-3 font-semibold">Employee</th><th className="px-4 py-3 font-semibold">Date</th>
-              <th className="px-4 py-3 font-semibold">Time</th><th className="px-4 py-3 font-semibold">Reason</th><th className="px-4 py-3 font-semibold">Hours</th>
-              <th className="px-4 py-3 font-semibold">Status</th><th className="px-4 py-3 font-semibold">Decided by</th>
+              <th className="px-6 py-3 font-semibold">Employee</th>
+              <th className="px-4 py-3 font-semibold">Date</th><th className="px-4 py-3 font-semibold">Time</th>
+              <th className="px-4 py-3 font-semibold">Hours</th><th className="px-4 py-3 font-semibold">Reason</th>
+              <th className="px-4 py-3 font-semibold">Status</th>
+              <th className="px-4 py-3 font-semibold">Approved By</th>
               <th className="px-6 py-3 font-semibold text-right">Action</th>
             </tr>
           </thead>
@@ -964,10 +969,9 @@ function EditableEarnedRow({ row, managers, onApplyEdit, onVoidEarned }) {
       <tr className="border-b border-slate-50 last:border-0 opacity-60">
         <td className="px-6 py-3 font-medium text-slate-800">{row.employeeName}</td>
         <td className="px-4 py-3 whitespace-nowrap">{fmtDate(row.dateWorked)}</td>
-        <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate">{row.eventReason}</td>
-        <td className="px-4 py-3 text-slate-500 whitespace-nowrap">—</td>
         <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{row.extraHours != null ? `${row.regularHours} reg + ${row.extraHours} extra` : "—"}</td>
         <td className="px-4 py-3">{row.compHoursRounded}</td>
+        <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate">{row.eventReason}</td>
         <td className="px-4 py-3"><StatusBadge status="voided" /></td>
         <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{row.decidedByName || "—"}</td>
         <td className="px-6 py-3 text-right text-xs text-slate-400" title={row.voidNote}>{row.voidNote}</td>
@@ -983,14 +987,9 @@ function EditableEarnedRow({ row, managers, onApplyEdit, onVoidEarned }) {
           <input type="date" value={date} disabled={dateLocked} onChange={e => setDate(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-xs w-32 disabled:bg-slate-100 disabled:text-slate-400" />
           {dateLocked && <p className="text-[10px] text-orange-600 mt-0.5">Already used — void to correct.</p>}
         </td>
-        <td className="px-4 py-3"><input type="text" value={reason} onChange={e => setReason(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-xs w-full" /></td>
-        <td className="px-4 py-3">
-          <select value={adminId} onChange={e => setAdminId(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-xs bg-white">
-            {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-          </select>
-        </td>
         <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{row.extraHours != null ? `${row.regularHours} reg + ${row.extraHours} extra` : "—"}</td>
         <td className="px-4 py-3">{row.compHoursRounded}</td>
+        <td className="px-4 py-3"><input type="text" value={reason} onChange={e => setReason(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-xs w-full" /></td>
         <td className="px-4 py-3"><StatusBadge status={row.status} /></td>
         <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{row.decidedByName || "—"}</td>
         <td className="px-6 py-3">
@@ -1007,10 +1006,9 @@ function EditableEarnedRow({ row, managers, onApplyEdit, onVoidEarned }) {
     <tr className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
       <td className="px-6 py-3 font-medium text-slate-800">{row.employeeName}</td>
       <td className="px-4 py-3 whitespace-nowrap">{fmtDate(row.dateWorked)}</td>
-      <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate">{row.eventReason}</td>
-      <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{(managers.find(m => m.id === row.adminOverseeingUserId) || {}).name || "—"}</td>
       <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{row.extraHours != null ? `${row.regularHours} reg + ${row.extraHours} extra` : "—"}</td>
       <td className="px-4 py-3">{row.compHoursRounded}</td>
+      <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate">{row.eventReason}</td>
       <td className="px-4 py-3">
         <StatusBadge status={row.status} />
         {row.edits && row.edits.length > 0 && <span className="badge badge-neutral ml-1">Adjusted</span>}
@@ -1050,8 +1048,8 @@ function EditableUsedRow({ row, onApplyEdit, onVoidUsed }) {
         <td className="px-6 py-3 font-medium text-slate-800">{row.employeeName}</td>
         <td className="px-4 py-3 whitespace-nowrap">{fmtDate(row.dateOfLeave)}</td>
         <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{fmtTime(row.startTime)}–{fmtTime(row.endTime)}</td>
-        <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate">{row.reason}</td>
         <td className="px-4 py-3">{row.totalHours}</td>
+        <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate">{row.reason}</td>
         <td className="px-4 py-3"><StatusBadge status="voided" /></td>
         <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{row.decidedByName || "—"}</td>
         <td className="px-6 py-3 text-right text-xs text-slate-400" title={row.voidNote}>{row.voidNote}</td>
@@ -1065,8 +1063,8 @@ function EditableUsedRow({ row, onApplyEdit, onVoidUsed }) {
         <td className="px-6 py-3 font-medium text-slate-800">{row.employeeName}</td>
         <td className="px-4 py-3 whitespace-nowrap">{fmtDate(row.dateOfLeave)}</td>
         <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{fmtTime(row.startTime)}–{fmtTime(row.endTime)}</td>
-        <td className="px-4 py-3"><input type="text" value={reason} onChange={e => setReason(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-xs w-full" /></td>
         <td className="px-4 py-3">{row.totalHours}</td>
+        <td className="px-4 py-3"><input type="text" value={reason} onChange={e => setReason(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-xs w-full" /></td>
         <td className="px-4 py-3"><StatusBadge status={row.status} /></td>
         <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{row.decidedByName || "—"}</td>
         <td className="px-6 py-3">
@@ -1084,8 +1082,8 @@ function EditableUsedRow({ row, onApplyEdit, onVoidUsed }) {
       <td className="px-6 py-3 font-medium text-slate-800">{row.employeeName}</td>
       <td className="px-4 py-3 whitespace-nowrap">{fmtDate(row.dateOfLeave)}</td>
       <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{fmtTime(row.startTime)}–{fmtTime(row.endTime)}</td>
-      <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate">{row.reason}</td>
       <td className="px-4 py-3">{row.totalHours}</td>
+      <td className="px-4 py-3 text-slate-500 max-w-[140px] truncate">{row.reason}</td>
       <td className="px-4 py-3">
         <StatusBadge status={row.status} />
         {row.edits && row.edits.length > 0 && <span className="badge badge-neutral ml-1">Adjusted</span>}
