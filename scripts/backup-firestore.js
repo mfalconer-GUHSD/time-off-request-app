@@ -50,7 +50,12 @@ async function exportAllCollections() {
 async function getDriveClient() {
   const auth = new google.auth.GoogleAuth({
     credentials: serviceAccount,
-    scopes: ["https://www.googleapis.com/auth/drive.file"],
+    // NOTE: drive.file only reliably sees files/folders the app itself
+    // created — a pre-existing folder shared with the service account via
+    // the Drive sharing UI isn't visible under that narrower scope. Since
+    // this service account has no files of its own, the practical access
+    // is still limited to whatever's been explicitly shared with it.
+    scopes: ["https://www.googleapis.com/auth/drive"],
   });
   const authClient = await auth.getClient();
   return google.drive({ version: "v3", auth: authClient });
