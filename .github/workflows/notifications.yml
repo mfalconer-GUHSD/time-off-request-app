@@ -1,9 +1,8 @@
 name: Comp Time Notifications
 
-# Runs every 15 minutes to send "new request" alerts and check for
-# expiring/expired comp time — this replaces what would otherwise be
-# Cloud Functions triggers and a scheduled function, avoiding any
-# requirement for a Google Cloud billing account.
+# Runs every 15 minutes to send "new request" alerts — this replaces what
+# would otherwise be Cloud Functions triggers, avoiding any requirement
+# for a Google Cloud billing account.
 #
 # NOTE: GitHub disables scheduled workflows automatically after 60 days
 # of repository inactivity. If notifications silently stop, push any
@@ -35,5 +34,6 @@ jobs:
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: node scripts/send-notifications.js
