@@ -12,6 +12,13 @@
  * Required GitHub repo secrets (Settings > Secrets and variables > Actions):
  *   FIREBASE_SERVICE_ACCOUNT  — full JSON key for a Firebase service account
  *   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS
+ *   EMAIL_FROM                — the verified sender address, e.g.
+ *                               eagles@guhsd.net. NOTE: for SendGrid,
+ *                               SMTP_USER is always literally the string
+ *                               "apikey" (just the auth username) — it is
+ *                               NOT a real email address, so it can never
+ *                               be used as the From header. EMAIL_FROM
+ *                               must be a separately verified sender.
  *   APP_BASE_URL              — e.g. https://YOUR_PROJECT_ID.web.app
  */
 
@@ -30,10 +37,16 @@ const transport = nodemailer.createTransport({
   auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined,
 });
 
+const fromAddress = process.env.EMAIL_FROM;
+
 async function sendMail(to, subject, html) {
   if (!to) return;
+  if (!fromAddress) {
+    console.error(`Failed to email ${to}: EMAIL_FROM secret is not set.`);
+    return;
+  }
   try {
-    await transport.sendMail({ from: process.env.SMTP_USER, to, subject, html });
+    await transport.sendMail({ from: fromAddress, to, subject, html });
   } catch (err) {
     console.error(`Failed to email ${to}:`, err.message);
   }
