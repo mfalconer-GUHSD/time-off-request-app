@@ -1,1 +1,162 @@
-PLACEHOLDER
+rules_version = '2';
+
+// -----------------------------------------------------------------------
+// Comp Time Tracker — Firestore Security Rules
+//
+// Data model:
+//   users/{uid}            -> { email, name, school, isManagerFor: [schoolId,...], isSuperAdmin: bool }
+//   schools/{schoolId}      -> { name }
+//   earnedRequests/{id}     -> earned comp-time entries
+//   usedRequests/{id}       -> comp-time usage requests
+//   auditLog/{id}           -> append-only activity log
+//
+// NOTE ON ARCHITECTURE: this app runs on Firebase's free Spark plan with
+// no Cloud Functions (no billing account). That means there is no trusted
+// server recomputing the OT/straight-time comp-hour math — the client
+// computes it, and these rules validate the arithmetic on write as a
+// backstop against a tampered or buggy client. It's a weaker guarantee
+// than a Cloud Function recomputing it independently, but keeps the
+// worst case bounded to "obviously wrong values are rejected" rather than
+// "no check at all." FIFO consumption similarly runs as a client-side
+// Firestore transaction (executed under the approving manager's own
+// authenticated session) rather than an Admin-SDK transaction.
+// -----------------------------------------------------------------------
+
+function isSignedIn() {
+  return request.auth != null;
+}
+
+function isDistrictAccount() {
+  return isSignedIn() && request.auth.token.email.matches('.*@guhsd[.]net$');
+}
+
+function myUserDoc() {
+  return get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+}
+
+function isSuperAdmin() {
+  return isDistrictAccount() && myUserDoc().isSuperAdmin == true;
+}
+
+function isManagerFor(schoolId) {
+  return isDistrictAccount() && schoolId in myUserDoc().isManagerFor;
+}
+
+// Bounds-check for the comp-hour math: with weekend and daily-8-hour-
+// threshold logic now involved, exact recomputation isn't practical in
+// rules (no day-of-week/date parsing here) — so this checks the result
+// falls within the possible range (straight time floor, 1.5x ceiling)
+// rather than an exact match. A starting-balance (migrated) entry skips
+// this entirely since it isn't a calculated event.
+function compHoursMathIsValid(data) {
+  return (data.extraHours == null && data.isStartingBalance == true &&
+          data.compHoursRounded > 0 && data.compHoursExact == data.compHoursRounded &&
+          data.remainingHours == data.compHoursRounded)
+      ||
+         (data.extraHours != null &&
+          data.compHoursExact >= data.extraHours &&
+          data.compHoursExact <= data.extraHours * 1.5 &&
+          data.compHoursRounded >= data.extraHours - 0.125 &&
+          data.compHoursRounded <= data.extraHours * 1.5 + 0.125 &&
+          data.remainingHours == data.compHoursRounded);
+}
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Each person can read/update their own profile (but not grant
+    // themselves manager/superadmin rights — only a superadmin can do that).
+    // Managers can also read (but not write) profiles of people at a
+    // school they manage, needed to populate the "add starting balance"
+    // employee picker.
+    match /users/{uid} {
+      allow read: if isDistrictAccount() && (
+        request.auth.uid == uid ||
+        isSuperAdmin() ||
+        isManagerFor(resource.data.school)
+      );
+      allow create: if isDistrictAccount() && request.auth.uid == uid &&
+        request.resource.data.isManagerFor == [] &&
+        request.resource.data.isSuperAdmin == false;
+      allow update: if isDistrictAccount() && (
+        (request.auth.uid == uid &&
+          request.resource.data.isManagerFor == resource.data.isManagerFor &&
+          request.resource.data.isSuperAdmin == resource.data.isSuperAdmin)
+        || isSuperAdmin()
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // Read-only list of GUHSD schools, maintained by a superadmin.
+    match /schools/{schoolId} {
+      allow read: if isDistrictAccount();
+      allow write: if isSuperAdmin();
+    }
+
+    // Earned comp-time entries.
+    match /earnedRequests/{id} {
+      allow read: if isDistrictAccount() && (
+        resource.data.employeeId == request.auth.uid ||
+        isManagerFor(resource.data.school) ||
+        isSuperAdmin()
+      );
+      // Either: an employee creating their own pending entry (comp-hour
+      // math validated since there's no Cloud Function to recompute it
+      // authoritatively) — OR a manager directly crediting an approved
+      // "starting balance" entry on behalf of someone at a school they
+      // manage (the only way a starting balance can be created at all;
+      // employees cannot self-submit one).
+      allow create: if isDistrictAccount() && compHoursMathIsValid(request.resource.data) && (
+        (request.resource.data.employeeId == request.auth.uid &&
+         request.resource.data.status == 'pending' &&
+         request.resource.data.isStartingBalance == false)
+        ||
+        (isManagerFor(request.resource.data.school) &&
+         request.resource.data.status == 'approved' &&
+         request.resource.data.isStartingBalance == true)
+      );
+      // Managers (for FIFO drawdown, edits, and void) and superadmins can
+      // update — but the core hour math can never change after creation,
+      // even via a manager update. Only remainingHours (FIFO drawdown),
+      // status/decidedAt, dateWorked (no longer tied to any expiration —
+      // enforced in the app's void-vs-edit logic), eventReason,
+      // adminOverseeingUserId, edits, and void* fields may change.
+      allow update: if isDistrictAccount() &&
+        (isManagerFor(resource.data.school) || isSuperAdmin()) &&
+        request.resource.data.employeeId == resource.data.employeeId &&
+        request.resource.data.extraHours == resource.data.extraHours &&
+        request.resource.data.regularHours == resource.data.regularHours &&
+        request.resource.data.compHoursExact == resource.data.compHoursExact &&
+        request.resource.data.compHoursRounded == resource.data.compHoursRounded &&
+        request.resource.data.otApplied == resource.data.otApplied;
+      allow delete: if isSuperAdmin();
+    }
+
+    // Comp-time usage requests.
+    match /usedRequests/{id} {
+      allow read: if isDistrictAccount() && (
+        resource.data.employeeId == request.auth.uid ||
+        isManagerFor(resource.data.school) ||
+        isSuperAdmin()
+      );
+      allow create: if isDistrictAccount() &&
+        request.resource.data.employeeId == request.auth.uid &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.totalHours > 0;
+      // Same principle: the hours actually drawn from the ledger (totalHours)
+      // can never change after creation, only descriptive fields and status.
+      allow update: if isDistrictAccount() &&
+        (isManagerFor(resource.data.school) || isSuperAdmin()) &&
+        request.resource.data.employeeId == resource.data.employeeId &&
+        request.resource.data.totalHours == resource.data.totalHours;
+      allow delete: if isSuperAdmin();
+    }
+
+    // Append-only audit trail. Nobody edits or deletes history.
+    match /auditLog/{id} {
+      allow read: if isDistrictAccount();
+      allow create: if isDistrictAccount();
+      allow update, delete: if false;
+    }
+  }
+}
